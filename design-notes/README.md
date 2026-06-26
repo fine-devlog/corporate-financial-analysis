@@ -7,9 +7,9 @@
 
 ## 各ファイル名の日本語訳（自分用）
 - ui-design-notes：UIデザインメモ
-- tailored-programs：個別カスタマイズプログラム
-- proprietary-features：独自機能
+- data-persistence-notes：データ保存構想メモ
+- tailored-programs：ターゲット別プログラム作成構想
+- proprietary-features：四季報の独自機能
 - industry-comparison-notes：業界比較メモ
-- financial-analytics-architecture：財務分析システム構成
-- data-persistence-notes：データ永続化メモ
+- financial-analytics-architecture：免責設計
 - validation-ideas：検証アイデア
