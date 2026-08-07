@@ -1,4 +1,4 @@
-# design-notes
+# marketing-design-notes
 設計上のアイデアメモ
 
 ## 概要
