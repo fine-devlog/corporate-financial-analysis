@@ -1,3 +1,4 @@
+import random
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -11,6 +12,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+CURRENT_YEAR = datetime.now().year
 
 
 @st.cache_resource
@@ -32,8 +35,12 @@ def init_session_state():
         "reporter_headline": "",
         "market_ranking": [""] * 15,
         "market_sentiment_skipped": False,
-        "evaluation_score": 0,
         "comparison_result": {},
+        "company_score_pct": 0.0,
+        "reporter_score_pct": 0.0,
+        "reporter_weight": 0.0,
+        "reporter_level": "",
+        "reporter_detail": None,
         "search_not_found": False,
         "skip_save": False,
         "manual_confirmed": False,
@@ -56,8 +63,10 @@ def goto(page_name: str):
 def reset_all_and_goto_title():
     keys_to_clear = [
         "selected_industry", "selected_company", "reporter_headline",
-        "market_ranking", "market_sentiment_skipped", "evaluation_score",
-        "comparison_result", "search_not_found", "skip_save", "manual_confirmed",
+        "market_ranking", "market_sentiment_skipped", "comparison_result",
+        "company_score_pct", "reporter_score_pct", "reporter_weight",
+        "reporter_level", "reporter_detail",
+        "search_not_found", "skip_save", "manual_confirmed",
     ]
     for k in keys_to_clear:
         if k in st.session_state:
@@ -175,6 +184,10 @@ COMPANY_DATA_BY_INDUSTRY = {
     },
 }
 
+_founding_year_rng = random.Random(42)
+for _industry, _data in COMPANY_DATA_BY_INDUSTRY.items():
+    _data["創業年"] = [_founding_year_rng.randint(1955, 2020) for _ in _data["企業名"]]
+
 
 @st.cache_data(ttl=60)
 def fetch_companies_from_db(industry: str) -> pd.DataFrame:
@@ -183,18 +196,19 @@ def fetch_companies_from_db(industry: str) -> pd.DataFrame:
     except Exception:
         rows = []
     if not rows:
-        return pd.DataFrame(columns=["企業名", *METRIC_COLUMNS])
+        return pd.DataFrame(columns=["企業名", *METRIC_COLUMNS, "創業年"])
     return pd.DataFrame(rows).rename(columns={
         "company_name": "企業名",
         "income": "平均年収（万）",
         "age": "平均年齢（歳）",
         "overseas_ratio": "海外売上比率（％）",
-    })[["企業名", *METRIC_COLUMNS]]
+        "founding_year": "創業年",
+    })[["企業名", *METRIC_COLUMNS, "創業年"]]
 
 
 def get_industry_dataframe(industry: str):
     base_data = COMPANY_DATA_BY_INDUSTRY.get(industry)
-    base_df = pd.DataFrame(base_data) if base_data else pd.DataFrame(columns=["企業名", *METRIC_COLUMNS])
+    base_df = pd.DataFrame(base_data) if base_data else pd.DataFrame(columns=["企業名", *METRIC_COLUMNS, "創業年"])
     db_df = fetch_companies_from_db(industry)
     combined_df = pd.concat([base_df, db_df], ignore_index=True)
     if combined_df.empty:
@@ -209,33 +223,318 @@ def calculate_industry_threshold(industry: str) -> dict:
     return {metric: round(df[metric].mean(), 1) for metric in METRIC_COLUMNS}
 
 
+def evaluate_metric_diff(value: float, base_value: float) -> float:
+    if base_value == 0:
+        return 0.0
+    diff_ratio = (value - base_value) / base_value
+    return max(-30.0, min(30.0, diff_ratio * 100))
+
+
+def evaluate_age_with_tenure(avg_age, industry_avg_age, founding_year):
+    base_score = evaluate_metric_diff(avg_age, industry_avg_age)
+    tenure_adjustment = 0
+    tenure_note = ""
+    if founding_year:
+        company_age_years = CURRENT_YEAR - founding_year
+        if company_age_years >= 15 and avg_age < 35:
+            tenure_adjustment = -15
+            tenure_note = f"（懸念：創業{company_age_years}年に対し平均年齢が若く、早期離職の可能性）"
+        elif company_age_years >= 15 and avg_age >= 40:
+            tenure_adjustment = 5
+            tenure_note = f"（好材料：創業{company_age_years}年で平均年齢も高く、定着率の良さがうかがえます）"
+    total_score = base_score + tenure_adjustment
+    if total_score >= 10:
+        judgement = "業界平均より高い" + tenure_note
+    elif total_score <= -10:
+        judgement = "業界平均より低い" + tenure_note
+    else:
+        judgement = "業界平均並み" + tenure_note
+    return total_score, judgement
+
+
 def evaluate_against_industry(company_row: dict, industry: str) -> dict:
     thresholds = calculate_industry_threshold(industry)
     result = {}
     for metric, base_value in thresholds.items():
         company_value = company_row.get(metric)
         if company_value is None:
-            result[metric] = "データなし"
+            result[metric] = {"score": 0.0, "judgement": "データなし"}
             continue
-        diff_ratio = (company_value - base_value) / base_value
-        if diff_ratio >= 0.10:
-            result[metric] = "業界平均より高い"
-        elif diff_ratio <= -0.10:
-            result[metric] = "業界平均より低い"
+        if metric == "平均年齢（歳）":
+            score, judgement = evaluate_age_with_tenure(company_value, base_value, company_row.get("創業年"))
         else:
-            result[metric] = "業界平均並み"
+            score = evaluate_metric_diff(company_value, base_value)
+            if score >= 10:
+                judgement = "業界平均より高い"
+            elif score <= -10:
+                judgement = "業界平均より低い"
+            else:
+                judgement = "業界平均並み"
+        result[metric] = {"score": score, "judgement": judgement}
     return result
 
 
-def apply_comparison_to_score(comparison: dict):
-    score_delta = sum(
-        1 if v == "業界平均より高い" else (-1 if v == "業界平均より低い" else 0)
-        for v in comparison.values()
-    )
-    st.session_state["evaluation_score"] += score_delta
+def calculate_company_score_pct(comparison: dict) -> float:
+    total = sum(v["score"] for v in comparison.values())
+    max_possible = 30 + 45 + 30
+    return max(-100.0, min(100.0, total / max_possible * 100))
 
 
-# ★指標名はMETRIC_COLUMNSと完全一致させる（全角カッコで統一）
+_HEADLINE_RAW = [
+    ("連続最高益", 5, "利益", "利益", "最高益継続", 85),
+    ("最高益更新", 5, "利益", "利益", "過去最高更新", 36),
+    ("最高純益", 5, "利益", "純利益", "過去最高", 0),
+    ("最高益", 5, "利益", "利益", "過去最高", 110),
+    ("最高益圏", 4, "利益", "利益", "高水準", 7),
+    ("続伸", 3, "成長", "売上・利益等", "増加継続", 222),
+    ("増勢", 3, "成長", "売上・利益等", "増加傾向", 68),
+    ("成長続く", 4, "成長", "業績・事業", "成長継続", 1),
+    ("連続増益", 4, "利益", "利益", "増益継続", 92),
+    ("増益続く", 4, "利益", "利益", "増益継続", 85),
+    ("絶好調", 5, "業績モメンタム", "業績全般", "非常に好調", 8),
+    ("好調", 3, "業績モメンタム", "業績全般", "好調", 48),
+    ("大幅増益", 4, "利益", "利益", "大幅増加", 73),
+    ("高水準", 2, "業績水準", "売上・利益等", "高水準", 24),
+    ("連続増配", 4, "株主還元", "配当", "増配継続", 214),
+    ("快走", 4, "業績モメンタム", "業績全般", "強い進捗", 64),
+    ("加速", 4, "成長", "成長率・利益等", "成長加速", 9),
+    ("好発進", 3, "業績モメンタム", "業績進捗", "好スタート", 2),
+    ("増益基調", 3, "利益", "利益", "増益傾向", 12),
+    ("着実増", 3, "成長", "売上・利益等", "着実な増加", 16),
+    ("着実", 2, "業績モメンタム", "業績全般", "安定・順調", 17),
+    ("順調", 2, "業績モメンタム", "業績全般", "順調", 29),
+    ("堅調", 2, "業績モメンタム", "業績全般", "安定・堅調", 56),
+    ("前進", 2, "業績モメンタム", "業績全般", "改善", 3),
+    ("伸長", 3, "成長", "売上・事業規模等", "増加", 29),
+    ("小幅増益", 2, "利益", "利益", "小幅増加", 70),
+    ("小幅増益圏", 1, "利益", "利益", "小幅増益", 1),
+    ("営業増益", 2, "利益", "営業利益", "増加", 2),
+    ("微増益", 1, "利益", "利益", "微増", 27),
+    ("微増益圏", 1, "利益", "利益", "微増", 6),
+    ("回復軌道", 3, "回復", "業績全般", "回復継続", 1),
+    ("好転", 3, "回復", "業績全般", "改善", 121),
+    ("上向く", 3, "回復", "業績全般", "改善", 147),
+    ("急改善", 4, "回復", "業績全般・利益", "大幅改善", 17),
+    ("Ｖ字回復", 4, "回復", "業績全般", "急回復", 8),
+    ("急回復", 4, "回復", "業績全般", "急速回復", 16),
+    ("急浮上", 4, "回復", "業績全般", "急改善", 4),
+    ("回復", 3, "回復", "業績全般", "改善", 10),
+    ("急反発", 4, "回復", "業績・利益等", "急改善", 29),
+    ("好反発", 3, "回復", "業績全般", "強い回復", 10),
+    ("反発", 2, "回復", "業績全般", "回復", 71),
+    ("反転増", 3, "回復", "利益等", "減少→増加", 22),
+    ("復調", 3, "回復", "業績全般", "回復", 37),
+    ("改善", 2, "回復", "業績全般", "改善", 32),
+    ("小反発", 1, "回復", "業績全般", "小幅回復", 26),
+    ("持ち直す", 1, "回復", "業績全般", "悪化→改善", 9),
+    ("底打ち", 1, "回復", "業績全般", "悪化停止", 5),
+    ("底入れ", 1, "回復", "業績全般", "悪化停止", 11),
+    ("底離れ", 2, "回復", "業績全般", "底→上昇", 0),
+    ("戻り歩調", 1, "回復", "業績全般", "回復", 4),
+    ("回復基調", 2, "回復", "業績全般", "回復傾向", 9),
+    ("改善基調", 2, "回復", "業績全般", "改善傾向", 5),
+    ("浮上", 2, "回復", "業績全般", "改善", 51),
+    ("赤字縮小", 2, "損益状態", "赤字", "赤字改善", 7),
+    ("黒字化", 4, "損益状態", "利益", "赤字→黒字", 61),
+    ("黒字復帰", 4, "損益状態", "利益", "赤字→黒字", 37),
+    ("復配", 3, "株主還元", "配当", "無配→配当", 9),
+    ("増配", 4, "株主還元", "配当", "増額", 174),
+    ("増益幅拡大", 4, "利益", "利益", "増益加速", 3),
+    ("大幅増額", 4, "業績予想修正", "業績予想", "上方修正", 0),
+    ("独自増額", 5, "業績予想修正", "四季報予想", "上方修正", 29),
+    ("減益幅縮小", 2, "利益", "利益", "減益改善", 19),
+    ("上振れ", 4, "業績予想修正", "業績・利益等", "予想超過", 34),
+    ("再増額", 5, "業績予想修正", "業績予想", "再上方修正", 1),
+    ("一転増益", 4, "利益", "利益", "減益→増益", 4),
+    ("一転黒字", 4, "損益状態", "利益", "赤字→黒字", 0),
+    ("増額", 4, "業績予想修正", "業績予想", "上方修正", 51),
+    ("赤字幅縮小", 2, "損益状態", "赤字", "赤字改善", 4),
+    ("後半挽回", 1, "業績モメンタム", "業績進捗", "後半改善", 1),
+    ("大幅赤字", -5, "損益状態", "赤字", "大幅悪化", 2),
+    ("赤字転落", -4, "損益状態", "利益", "黒字→赤字", 7),
+    ("連続赤字", -5, "損益状態", "赤字", "赤字継続", 10),
+    ("続落", -3, "成長", "売上・利益等", "減少継続", 53),
+    ("苦戦続く", -4, "業績モメンタム", "業績全般", "不振継続", 0),
+    ("連続減益", -4, "利益", "利益", "減益継続", 22),
+    ("減益続く", -4, "利益", "利益", "減益継続", 21),
+    ("大赤字", -5, "損益状態", "赤字", "大幅赤字", 0),
+    ("赤字続く", -5, "損益状態", "赤字", "赤字継続", 21),
+    ("赤字継続", -5, "損益状態", "赤字", "赤字継続", 5),
+    ("大幅減益", -4, "利益", "利益", "大幅減少", 34),
+    ("赤字", -4, "損益状態", "利益", "赤字", 12),
+    ("急降下", -4, "業績モメンタム", "業績全般", "急悪化", 4),
+    ("赤字拡大", -5, "損益状態", "赤字", "赤字悪化", 7),
+    ("後退", -3, "業績モメンタム", "業績全般", "悪化", 28),
+    ("低迷", -3, "業績モメンタム", "業績全般", "低調", 2),
+    ("急反落", -4, "業績モメンタム", "業績・利益等", "急悪化", 19),
+    ("水面下", -3, "損益状態", "利益", "赤字圏", 27),
+    ("一歩後退", -2, "業績モメンタム", "業績全般", "小幅悪化", 14),
+    ("赤字残る", -3, "損益状態", "赤字", "赤字継続", 14),
+    ("底ばい", -2, "業績モメンタム", "業績全般", "低水準停滞", 3),
+    ("ゼロ圏", -1, "損益状態", "利益", "ほぼゼロ", 6),
+    ("小幅減益", -2, "利益", "利益", "小幅減少", 47),
+    ("小幅赤字", -2, "損益状態", "赤字", "小幅赤字", 5),
+    ("微減益", -1, "利益", "利益", "微減", 11),
+    ("均衡圏", 0, "損益状態", "損益", "±0付近", 18),
+    ("停滞", -2, "業績モメンタム", "業績全般", "成長停止", 9),
+    ("反落", -3, "業績モメンタム", "業績・利益等", "増加→減少", 185),
+    ("急落", -4, "業績モメンタム", "業績等", "急減少", 25),
+    ("急減速", -4, "成長", "成長率・利益等", "急鈍化", 0),
+    ("急悪化", -5, "業績モメンタム", "業績全般", "急激悪化", 0),
+    ("下降", -3, "業績モメンタム", "業績等", "下降", 0),
+    ("反動減", -2, "成長", "売上・利益等", "一時的減少", 5),
+    ("横ばい", 0, "業績水準", "売上・利益等", "変化なし", 86),
+    ("横ばい圏", 0, "業績水準", "売上・利益等", "ほぼ変化なし", 61),
+    ("軟調", -2, "業績モメンタム", "業績全般", "弱含み", 30),
+    ("低調", -3, "業績モメンタム", "業績全般", "低調", 7),
+    ("低水準", -2, "業績水準", "売上・利益等", "低水準", 4),
+    ("苦戦", -3, "業績モメンタム", "業績全般", "不振", 4),
+    ("不透明", -1, "見通し", "業績見通し", "不確実", 2),
+    ("回復途上", 1, "回復", "業績全般", "回復中", 3),
+    ("回復鈍い", -1, "回復", "業績全般", "回復弱い", 0),
+    ("足踏み", -1, "業績モメンタム", "業績全般", "改善停滞", 43),
+    ("一服", -1, "業績モメンタム", "成長・業績", "一時鈍化", 25),
+    ("頭打ち", -2, "成長", "成長・業績", "成長限界", 1),
+    ("踊り場", -1, "業績モメンタム", "業績全般", "一時停滞", 16),
+    ("費用先行", -1, "コスト", "利益・費用", "費用先行", 4),
+    ("先行投資", 0, "投資", "費用・成長投資", "短期負担", 6),
+    ("費用増", -2, "コスト", "費用", "コスト増加", 19),
+    ("特需剥落", -3, "外部要因", "売上・利益", "特需消失", 3),
+    ("剥落", -3, "外部要因", "売上・利益等", "追い風消失", 2),
+    ("無配", -4, "株主還元", "配当", "配当なし", 2),
+    ("減配", -4, "株主還元", "配当", "減額", 24),
+    ("減益幅拡大", -4, "利益", "利益", "悪化加速", 4),
+    ("大幅減額", -5, "業績予想修正", "業績予想", "大幅下方修正", 1),
+    ("赤字幅拡大", -5, "損益状態", "赤字", "赤字悪化", 5),
+    ("増益幅縮小", -2, "利益", "利益", "増益鈍化", 8),
+    ("下振れ", -4, "業績予想修正", "業績・利益等", "予想未達", 14),
+    ("再減額", -5, "業績予想修正", "業績予想", "再下方修正", 0),
+    ("一転減益", -4, "利益", "利益", "増益→減益", 8),
+    ("一転赤字", -5, "損益状態", "利益", "黒字→赤字", 1),
+    ("減額", -4, "業績予想修正", "業績予想", "下方修正", 8),
+    ("減速", -3, "成長", "成長率・利益等", "鈍化", 4),
+    ("後半減速", -2, "成長", "業績進捗", "後半鈍化", 0),
+]
+
+HEADLINE_DICTIONARY = {
+    row[0]: {"score": row[1], "category": row[2], "target": row[3], "direction": row[4], "frequency": row[5]}
+    for row in _HEADLINE_RAW
+}
+_SORTED_HEADLINE_KEYS = sorted(HEADLINE_DICTIONARY.keys(), key=len, reverse=True)
+
+
+def match_headline(text: str):
+    if not text:
+        return None
+    for key in _SORTED_HEADLINE_KEYS:
+        if key in text:
+            return key, HEADLINE_DICTIONARY[key]
+    return None
+
+
+def rank_weight(rank: int, total: int = 15) -> float:
+    if total <= 1:
+        return 1.0
+    return 1.00 - (rank - 1) / (total - 1) * 0.70
+
+
+def calculate_market_sentiment(rankings: list) -> dict:
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    category_counts = {}
+    details = []
+    total = len(rankings)
+
+    for i, text in enumerate(rankings):
+        rank = i + 1
+        if not text.strip():
+            continue
+        match = match_headline(text)
+        w = rank_weight(rank, total)
+        if match:
+            key, info = match
+            weighted_sum += info["score"] * w
+            weight_sum += w
+            category_counts[info["category"]] = category_counts.get(info["category"], 0) + 1
+            details.append({"rank": rank, "text": text, "keyword": key, "score": info["score"]})
+        else:
+            details.append({"rank": rank, "text": text, "keyword": None, "score": None})
+
+    sentiment = weighted_sum / weight_sum if weight_sum > 0 else None
+    return {"sentiment": sentiment, "category_breakdown": category_counts, "details": details}
+
+
+def calculate_company_headline_score(headline_text: str):
+    match = match_headline(headline_text)
+    if not match:
+        return None
+    key, info = match
+    return {
+        "keyword": key,
+        "score": info["score"],
+        "category": info["category"],
+        "direction": info["direction"],
+        "frequency": info["frequency"],
+        "is_rare": info["frequency"] <= 5,
+    }
+
+
+def calculate_reporter_component(headline_text: str, rankings: list):
+    market_result = calculate_market_sentiment(rankings)
+    market_sentiment = market_result["sentiment"]
+    company_result = calculate_company_headline_score(headline_text)
+
+    filled_rankings_count = sum(1 for r in rankings if r.strip())
+    headline_filled = bool(headline_text.strip())
+
+    if not headline_filled and filled_rankings_count == 0:
+        return 0.0, 0.0, "スキップ（企業データのみで評価）", None
+
+    company_abs = company_result["score"] if company_result else None
+    relative = None
+    if company_abs is not None and market_sentiment is not None:
+        relative = company_abs - market_sentiment
+
+    if company_abs is not None:
+        if relative is not None:
+            blended = company_abs * 0.6 + relative * 0.4
+            reporter_score_pct = max(-100.0, min(100.0, blended / 8 * 100))
+        else:
+            reporter_score_pct = max(-100.0, min(100.0, company_abs / 5 * 100))
+    elif market_sentiment is not None:
+        reporter_score_pct = max(-100.0, min(100.0, market_sentiment / 5 * 100))
+    else:
+        reporter_score_pct = 0.0
+
+    if filled_rankings_count >= 12:
+        weight = 60.0
+        level = "市場全体ランキング（ほぼ全件入力・最重視）"
+    elif headline_filled and filled_rankings_count < 3:
+        weight = 25.0
+        level = "対象企業の記者コメントのみ"
+    else:
+        weight = min(60.0, 25.0 + filled_rankings_count * 2.5)
+        level = f"ランキング一部入力（{filled_rankings_count}件）"
+
+    detail = {
+        "company": company_result,
+        "market_sentiment": market_sentiment,
+        "relative": relative,
+        "market_category_breakdown": market_result["category_breakdown"],
+    }
+    return reporter_score_pct, weight, level, detail
+
+
+COMPANY_WEIGHT = 40.0
+
+
+def calculate_final_score(company_score_pct: float, reporter_score_pct: float, reporter_weight: float) -> float:
+    total_weight = COMPANY_WEIGHT + reporter_weight
+    if total_weight == 0:
+        return 0.0
+    return (company_score_pct * COMPANY_WEIGHT + reporter_score_pct * reporter_weight) / total_weight
+
+
 EXPECTED_TYPICAL_MAX = {
     "平均年収（万）": 1500,
     "平均年齢（歳）": 65,
@@ -249,19 +548,16 @@ def validate_metrics(values: dict):
     needs_confirmation = False
     is_extreme_outlier = False
     messages = []
-
     for metric, value in values.items():
         if metric in POSITIVE_ONLY_METRICS and value < 0:
             has_negative_error = True
             messages.append(f"❌「{metric}」はマイナスの値を取りえません。修正してください。（入力値：{value}）")
             continue
-
         if metric == "海外売上比率（％）":
             if value > 100:
                 needs_confirmation = True
                 messages.append(f"⚠️「{metric}」が100％を超えています。入力に誤りがないかご確認ください。")
             continue
-
         typical_max = EXPECTED_TYPICAL_MAX.get(metric)
         if typical_max is None:
             continue
@@ -277,8 +573,15 @@ def validate_metrics(values: dict):
                 f"⚠️「{metric}」が想定範囲の3倍近く（{typical_max * 3}以上）です。"
                 "入力に間違いがないかご確認の上、チェックしてください。"
             )
-
     return has_negative_error, needs_confirmation, is_extreme_outlier, messages
+
+
+def validate_founding_year(founding_year: int):
+    if founding_year > CURRENT_YEAR:
+        return False, f"❌「創業年」が未来の年になっています（入力値：{founding_year}）。修正してください。"
+    if founding_year < 1850:
+        return False, f"⚠️「創業年」が古すぎます（入力値：{founding_year}）。入力に誤りがないかご確認ください。"
+    return True, ""
 
 
 def get_user_role(user) -> str:
@@ -291,7 +594,6 @@ def get_user_role(user) -> str:
 def page_login():
     st.title("🔐 ログイン")
     st.write("本ツールの利用にはログインが必要です")
-
     tab_login, tab_signup = st.tabs(["ログイン", "新規登録"])
     with tab_login:
         email = st.text_input("メールアドレス", key="login_email")
@@ -303,7 +605,6 @@ def page_login():
                 st.rerun()
             except Exception:
                 st.error("メールアドレスまたはパスワードが正しくありません。")
-
     with tab_signup:
         new_email = st.text_input("メールアドレス", key="signup_email")
         new_password = st.text_input("パスワード（8文字以上）", type="password", key="signup_password")
@@ -320,7 +621,7 @@ def page_login():
 
 def page_title():
     st.title("📊 就活生のための企業データ分析ツール")
-    st.write("平均年収・平均年齢・海外売上比率など、就活生が見るべき指標に注目して企業分析を行うツールです。")
+    st.write("平均年収・平均年齢（創業年考慮）・海外売上比率と、四季報の見出し語から企業の傾向を分析します。")
     user = st.session_state["auth_user"]
     st.caption(f"ログイン中：{user.email}")
     col1, col2 = st.columns([3, 1])
@@ -332,7 +633,6 @@ def page_title():
             supabase.auth.sign_out()
             st.session_state["auth_user"] = None
             st.rerun()
-
     if get_user_role(user) == "admin":
         st.write("---")
         if st.button("🔒 管理者ページへ"):
@@ -346,11 +646,11 @@ def page_disclaimer():
         st.subheader("企業分析ツール　ご利用にあたって")
         st.markdown("""
 第一条（目的）
-本プログラムは、公開情報等をもとにした平均年収・平均年齢・海外売上比率等の
-指標により、業界内での企業の傾向を把握するための参考情報提供ツールです。
+本プログラムは、公開情報等をもとにした平均年収・平均年齢・海外売上比率・創業年・
+四季報の見出し語等の指標により、業界内での企業の傾向を把握するための参考情報提供ツールです。
 
 第二条（断定的表現の排除）
-本ツールが示す「業界平均より高い／低い」等の表示は機械的な計算結果であり、
+本ツールが示す評価スコアは機械的な計算結果であり、
 対象企業への入社の可否や優劣を断定するものではありません。
 
 第三条（業界差の考慮）
@@ -398,10 +698,6 @@ def page_company_data():
     st.subheader("企業データ一覧")
     st.dataframe(df, use_container_width=True)
 
-    # =====================================================
-    # ★企業検索〜手入力までを、すべてこの expander の中に収める
-    #   （前回の版はここが関数の外に飛び出して壊れていました）
-    # =====================================================
     with st.expander("🔍 企業を検索する", expanded=True):
         company_name = st.text_input("企業名（上記のいずれか）", key="company_search_input")
         if st.button("検索"):
@@ -414,7 +710,7 @@ def page_company_data():
                 company_row = matched.iloc[0].to_dict()
                 comparison = evaluate_against_industry(company_row, industry)
                 st.session_state["comparison_result"] = comparison
-                apply_comparison_to_score(comparison)
+                st.session_state["company_score_pct"] = calculate_company_score_pct(comparison)
                 st.success(f"「{company_name}」を業界基準と比較しました")
 
         if st.session_state["search_not_found"]:
@@ -423,6 +719,9 @@ def page_company_data():
             my_income = st.number_input("平均年収（万）", value=400, key="manual_income")
             my_age = st.number_input("平均年齢（歳）", value=40, key="manual_age")
             my_overseas = st.number_input("海外売上比率（％）", value=30, key="manual_overseas")
+            my_founding_year = st.number_input(
+                "創業年（西暦）", value=2010, min_value=1850, max_value=CURRENT_YEAR, key="manual_founding_year"
+            )
 
             values = {
                 "平均年収（万）": my_income,
@@ -430,7 +729,9 @@ def page_company_data():
                 "海外売上比率（％）": my_overseas,
             }
             has_negative_error, needs_confirmation, is_extreme_outlier, messages = validate_metrics(values)
-
+            year_ok, year_message = validate_founding_year(my_founding_year)
+            if not year_ok:
+                messages.append(year_message)
             for msg in messages:
                 st.write(msg)
 
@@ -438,15 +739,15 @@ def page_company_data():
             if needs_confirmation:
                 confirmed = st.checkbox("入力内容に間違いがないことを確認しました", key="manual_confirm_checkbox")
 
-            submit_disabled = has_negative_error or (needs_confirmation and not confirmed)
+            submit_disabled = has_negative_error or (not year_ok) or (needs_confirmation and not confirmed)
 
             if st.button("この内容で比較する", disabled=submit_disabled):
-                company_row = {"企業名": my_company, **values}
+                company_row = {"企業名": my_company, "創業年": my_founding_year, **values}
                 comparison = evaluate_against_industry(company_row, industry)
                 st.session_state["selected_company"] = my_company
                 st.session_state["comparison_result"] = comparison
+                st.session_state["company_score_pct"] = calculate_company_score_pct(comparison)
                 st.session_state["skip_save"] = is_extreme_outlier
-                apply_comparison_to_score(comparison)
                 st.session_state["search_not_found"] = False
 
                 if not is_extreme_outlier:
@@ -457,6 +758,7 @@ def page_company_data():
                             "income": my_income,
                             "age": my_age,
                             "overseas_ratio": my_overseas,
+                            "founding_year": my_founding_year,
                         }).execute()
                         fetch_companies_from_db.clear()
                         st.success(f"「{my_company}」のデータを比較し、企業データベースにも登録しました")
@@ -465,11 +767,11 @@ def page_company_data():
                 else:
                     st.success(f"「{my_company}」のデータを比較しました（異常値のため企業データベースには登録しません）")
 
-    # ここから先はexpanderの外（page_company_data関数の中）
     if st.session_state["comparison_result"]:
         st.subheader(f"「{st.session_state['selected_company']}」の比較結果")
-        for metric, judgement in st.session_state["comparison_result"].items():
-            st.write(f"・{metric}：{judgement}")
+        for metric, info in st.session_state["comparison_result"].items():
+            st.write(f"・{metric}：{info['judgement']}")
+        st.caption(f"企業データスコア：{st.session_state['company_score_pct']:.0f}%（-100〜100の範囲）")
 
     st.subheader("指標比較グラフ")
     metric_to_plot = st.selectbox("表示する指標", METRIC_COLUMNS)
@@ -490,52 +792,106 @@ def page_company_data():
 
 def page_reporter_comment():
     st.title("記者コメント見出し／市場全体の見出しランキング")
-    st.info("会社四季報をお持ちでない場合は、何も入力せず「スキップ」を押して次に進んでください。")
-    headline = st.text_input("記者コメントの見出し")
+    st.info(
+        "会社四季報をお持ちでない場合は、何も入力せず「スキップ」を押して次に進んでください。"
+        "その場合は企業データのみで評価します。"
+    )
+    st.write(
+        "**対象企業の見出し**は四季報の記者コメント欄（右側）の見出し語をそのまま入力してください"
+        "（例：「連続増益」「黒字転換」など）。"
+        "**市場ランキング**は、その時点で上場企業に多く見られる見出し語を1〜15位まで入力すると、"
+        "市場全体の雰囲気（センチメント）として反映され、対象企業との相対評価が可能になります。"
+    )
+
+    headline = st.text_input("記者コメントの見出し（対象企業のもの）")
+
+    preview = calculate_company_headline_score(headline) if headline.strip() else None
+    if headline.strip() and preview is None:
+        st.caption("⚠️ 見出し辞書に一致するキーワードが見つかりませんでした（評価には反映されません）")
+    elif preview:
+        st.caption(f"→ 辞書マッチ：「{preview['keyword']}」（{preview['category']}／スコア{preview['score']:+d}）")
+
     st.write("市場全体の見出しランキング（1〜15位）")
     rankings = [st.text_input(f"{i + 1}位", key=f"rank_{i}") for i in range(15)]
 
     col1, col2 = st.columns(2)
     with col1:
         if st.button("スキップ"):
+            st.session_state["reporter_headline"] = ""
+            st.session_state["market_ranking"] = [""] * 15
+            st.session_state["reporter_score_pct"] = 0.0
+            st.session_state["reporter_weight"] = 0.0
+            st.session_state["reporter_level"] = "スキップ（企業データのみで評価）"
+            st.session_state["reporter_detail"] = None
             st.session_state["market_sentiment_skipped"] = True
             goto("result")
     with col2:
         if st.button("決定", type="primary"):
             st.session_state["reporter_headline"] = headline
             st.session_state["market_ranking"] = rankings
-
-            positive_words = ["最高益", "増配", "上方修正"]
-            negative_words = ["減益", "赤字", "下方修正"]
-            score = 0
-            for r in rankings:
-                if not r:
-                    continue
-                if any(w in r for w in positive_words):
-                    score += 1
-                if any(w in r for w in negative_words):
-                    score -= 1
-            st.session_state["evaluation_score"] += score
+            reporter_score_pct, weight, level, detail = calculate_reporter_component(headline, rankings)
+            st.session_state["reporter_score_pct"] = reporter_score_pct
+            st.session_state["reporter_weight"] = weight
+            st.session_state["reporter_level"] = level
+            st.session_state["reporter_detail"] = detail
             goto("result")
 
 
 def page_result():
     st.title("評価結果")
     st.caption(f"評価日時：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    score = st.session_state["evaluation_score"]
+
     company = st.session_state["selected_company"] or "選択企業"
     industry = st.session_state["selected_industry"]
-    st.metric("総合評価ポイント", score)
+
+    company_score_pct = st.session_state["company_score_pct"]
+    reporter_score_pct = st.session_state.get("reporter_score_pct", 0.0)
+    reporter_weight = st.session_state.get("reporter_weight", 0.0)
+    reporter_level = st.session_state.get("reporter_level", "")
+    detail = st.session_state.get("reporter_detail")
+
+    final_score = calculate_final_score(company_score_pct, reporter_score_pct, reporter_weight)
+
+    st.metric("総合評価スコア", f"{final_score:.0f}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write(f"企業データスコア：{company_score_pct:.0f}%（重み{COMPANY_WEIGHT:.0f}）")
+    with col2:
+        st.write(f"記者コメントスコア：{reporter_score_pct:.0f}%（重み{reporter_weight:.0f}）")
+    st.caption(f"記者コメントの入力状況：{reporter_level}")
 
     comparison = st.session_state.get("comparison_result", {})
     if comparison:
         st.subheader("業界基準値との比較")
-        for metric, judgement in comparison.items():
-            st.write(f"・{metric}：{judgement}")
+        for metric, info in comparison.items():
+            st.write(f"・{metric}：{info['judgement']}")
 
-    if score > 0:
+    if detail:
+        st.subheader("四季報見出しの分析")
+        c = detail.get("company")
+        market_sentiment = detail.get("market_sentiment")
+        relative = detail.get("relative")
+
+        if c:
+            rare_note = "（📌 市場で非常に珍しい表現です）" if c["is_rare"] else ""
+            st.write(f"対象企業の見出し：「{c['keyword']}」（{c['category']}／スコア{c['score']:+d}）{rare_note}")
+        if market_sentiment is not None:
+            st.write(f"市場センチメント（順位加重平均）：{market_sentiment:+.2f}（-5〜+5）")
+        if relative is not None:
+            mark = "🟢" if relative > 0 else ("🔴" if relative < 0 else "⚪")
+            st.write(f"{mark} 市場平均との差：{relative:+.2f}（プラスなら市場より強い見出し）")
+
+        breakdown = detail.get("market_category_breakdown") or {}
+        if breakdown:
+            total = sum(breakdown.values())
+            st.write("市場ランキングのカテゴリ内訳：")
+            for cat, count in sorted(breakdown.items(), key=lambda x: -x[1]):
+                st.write(f"　- {cat}：{count}件（{count / total * 100:.0f}%）")
+
+    if final_score >= 15:
         st.success(f"「{company}」は{industry}業界では「将来性に期待あり」でしょう。")
-    elif score < 0:
+    elif final_score <= -15:
         st.warning(f"「{company}」は{industry}業界では「懸念材料あり」でしょう。")
     else:
         st.write(f"「{company}」は{industry}業界では「横ばい予想」でしょう。")
@@ -554,7 +910,7 @@ def page_result():
                     "user_email": st.session_state["auth_user"].email,
                     "industry": industry,
                     "company": company,
-                    "score": score,
+                    "score": round(final_score),
                     "created_at": datetime.now().isoformat(),
                 }).execute()
             reset_all_and_goto_title()
@@ -565,24 +921,24 @@ def draw_shikiho_guide_diagram():
     ax.set_xlim(0, 10)
     ax.set_ylim(0, 10)
     ax.axis("off")
-
     regions = [
         (0, 8, 10, 2, "① 企業名・業種欄", "#4C72B0"),
         (0, 6, 6, 2, "② 業績欄（数値指標）", "#55A868"),
-        (6, 6, 4, 2, "③ 平均年収・年齢欄", "#C44E52"),
+        (6, 6, 4, 2, "③ 平均年収・年齢・創業年欄", "#C44E52"),
         (0, 3, 10, 3, "④ 記者コメント見出し（右側）", "#8172B2"),
         (0, 0, 10, 3, "⑤ 株主・海外売上比率欄", "#CCB974"),
     ]
     for x, y, w, h, label, color in regions:
         ax.add_patch(patches.Rectangle((x, y), w, h, facecolor=color, alpha=0.3, edgecolor=color))
         ax.text(x + w / 2, y + h / 2, label, ha="center", va="center", fontsize=9)
-
     return fig
 
 
 def page_help():
     st.title("就活目的での四季報の読み方・指標のコツ")
-    tab_video, tab_image, tab_text = st.tabs(["🎥 動画で見る", "🖼️ 図解で見る", "📝 テキストで見る"])
+    tab_video, tab_image, tab_text, tab_dict = st.tabs(
+        ["🎥 動画で見る", "🖼️ 図解で見る", "📝 テキストで見る", "📖 見出し辞書"]
+    )
 
     with tab_video:
         st.info(
@@ -596,14 +952,23 @@ def page_help():
 
     with tab_text:
         st.write(
-            "平均年齢と企業の創業年に注目しましょう。"
-            "創業からかなり経っているのに平均年齢が低い企業は早期退職者が多い可能性があります。"
+            "平均年齢と創業年をあわせて見ましょう。創業からかなり経っているのに"
+            "平均年齢が低い企業は、早期退職者が多い可能性があります（本ツールのスコアにも反映されます）。"
         )
         st.write(
-            "海外売上比率は60％以上だと比較的安心とされます。日本は今後も少子高齢化が"
-            "進む見込みのため、国内市場中心の企業より海外売上比率が高い企業の方が"
-            "将来性を期待しやすいという見方があります。"
+            "四季報の見出し語は、対象企業だけでなく市場全体のランキングと比べることが重要です。"
+            "同じ「増益」でも、市場全体が「最高益」だらけの中での増益なら見劣りしますし、"
+            "市場全体が「減益」だらけの中での増益ならかなり強い、と評価が変わります。"
         )
+
+    with tab_dict:
+        st.write("四季報の主な見出し語とスコアの対応表です。")
+        dict_df = pd.DataFrame([
+            {"見出し": k, "スコア": v["score"], "カテゴリ": v["category"], "出現数": v["frequency"]}
+            for k, v in HEADLINE_DICTIONARY.items()
+        ]).sort_values("スコア", ascending=False)
+        st.dataframe(dict_df, use_container_width=True, height=400)
+
     st.write("---")
     if st.button("戻る"):
         goto(st.session_state["prev_page"])
@@ -656,7 +1021,7 @@ def page_admin():
         file_name="data.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    if st.button("ログアウトしてトップへ"):
+    if st.button("管理者画面を閉じてトップへ"):
         st.session_state["is_admin_authed"] = False
         goto("title")
 
