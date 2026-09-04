@@ -2,7 +2,5 @@ streamlit
 pandas
 supabase
 openpyxl
-matplotlib.pyplot
-matplotlib.patches
-datetime
+matplotlib
 altair
