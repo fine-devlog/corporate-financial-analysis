@@ -1,0 +1,8 @@
+streamlit
+pandas
+supabase
+openpyxl
+matplotlib.pyplot
+matplotlib.patches
+datetime
+altair
