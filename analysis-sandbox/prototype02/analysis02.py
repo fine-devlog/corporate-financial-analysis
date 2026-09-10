@@ -41,6 +41,7 @@ def init_session_state():
         "reporter_weight": 0.0,
         "reporter_level": "",
         "reporter_detail": None,
+        "segment_note": None,
         "search_not_found": False,
         "skip_save": False,
         "manual_confirmed": False,
@@ -65,7 +66,7 @@ def reset_all_and_goto_title():
         "selected_industry", "selected_company", "reporter_headline",
         "market_ranking", "market_sentiment_skipped", "comparison_result",
         "company_score_pct", "reporter_score_pct", "reporter_weight",
-        "reporter_level", "reporter_detail",
+        "reporter_level", "reporter_detail", "segment_note",
         "search_not_found", "skip_save", "manual_confirmed",
     ]
     for k in keys_to_clear:
@@ -83,7 +84,13 @@ INDUSTRIES = [
     "13.金融", "14.建設・不動産", "15.小売", "16.サービス・運輸・レジャー",
 ]
 
-METRIC_COLUMNS = ["平均年収（万）", "平均年齢（歳）", "海外売上比率（％）"]
+METRIC_COLUMNS = [
+    "平均年収（万）", "平均年齢（歳）", "海外売上比率（％）",
+    "営業利益率（％）", "売上高成長率（％）", "営業利益成長率（％）",
+    "平均勤続年数（年）", "来期成長率予想（％）", "営業CFマージン（％）",
+]
+INFO_ONLY_COLUMNS = ["主力セグメント利益集中度（％）"]
+ALL_DATA_COLUMNS = METRIC_COLUMNS + ["創業年"] + INFO_ONLY_COLUMNS
 
 COMPANY_DATA_BY_INDUSTRY = {
     "1.電機・電子機器": {
@@ -188,6 +195,17 @@ _founding_year_rng = random.Random(42)
 for _industry, _data in COMPANY_DATA_BY_INDUSTRY.items():
     _data["創業年"] = [_founding_year_rng.randint(1955, 2020) for _ in _data["企業名"]]
 
+_extra_metrics_rng = random.Random(99)
+for _industry, _data in COMPANY_DATA_BY_INDUSTRY.items():
+    n = len(_data["企業名"])
+    _data["営業利益率（％）"] = [round(_extra_metrics_rng.uniform(2, 25), 1) for _ in range(n)]
+    _data["売上高成長率（％）"] = [round(_extra_metrics_rng.uniform(-10, 20), 1) for _ in range(n)]
+    _data["営業利益成長率（％）"] = [round(_extra_metrics_rng.uniform(-20, 30), 1) for _ in range(n)]
+    _data["平均勤続年数（年）"] = [round(_extra_metrics_rng.uniform(3, 20), 1) for _ in range(n)]
+    _data["来期成長率予想（％）"] = [round(_extra_metrics_rng.uniform(-5, 15), 1) for _ in range(n)]
+    _data["営業CFマージン（％）"] = [round(_extra_metrics_rng.uniform(-5, 20), 1) for _ in range(n)]
+    _data["主力セグメント利益集中度（％）"] = [round(_extra_metrics_rng.uniform(35, 95), 1) for _ in range(n)]
+
 
 @st.cache_data(ttl=60)
 def fetch_companies_from_db(industry: str) -> pd.DataFrame:
@@ -196,19 +214,26 @@ def fetch_companies_from_db(industry: str) -> pd.DataFrame:
     except Exception:
         rows = []
     if not rows:
-        return pd.DataFrame(columns=["企業名", *METRIC_COLUMNS, "創業年"])
+        return pd.DataFrame(columns=["企業名", *ALL_DATA_COLUMNS])
     return pd.DataFrame(rows).rename(columns={
         "company_name": "企業名",
         "income": "平均年収（万）",
         "age": "平均年齢（歳）",
         "overseas_ratio": "海外売上比率（％）",
         "founding_year": "創業年",
-    })[["企業名", *METRIC_COLUMNS, "創業年"]]
+        "operating_margin": "営業利益率（％）",
+        "revenue_growth": "売上高成長率（％）",
+        "operating_profit_growth": "営業利益成長率（％）",
+        "avg_tenure": "平均勤続年数（年）",
+        "next_year_growth_forecast": "来期成長率予想（％）",
+        "operating_cf_margin": "営業CFマージン（％）",
+        "segment_concentration": "主力セグメント利益集中度（％）",
+    })[["企業名", *ALL_DATA_COLUMNS]]
 
 
 def get_industry_dataframe(industry: str):
     base_data = COMPANY_DATA_BY_INDUSTRY.get(industry)
-    base_df = pd.DataFrame(base_data) if base_data else pd.DataFrame(columns=["企業名", *METRIC_COLUMNS, "創業年"])
+    base_df = pd.DataFrame(base_data) if base_data else pd.DataFrame(columns=["企業名", *ALL_DATA_COLUMNS])
     db_df = fetch_companies_from_db(industry)
     combined_df = pd.concat([base_df, db_df], ignore_index=True)
     if combined_df.empty:
@@ -221,6 +246,13 @@ def calculate_industry_threshold(industry: str) -> dict:
     if df is None:
         return {}
     return {metric: round(df[metric].mean(), 1) for metric in METRIC_COLUMNS}
+
+
+def calculate_industry_avg_segment_concentration(industry: str):
+    df = get_industry_dataframe(industry)
+    if df is None or "主力セグメント利益集中度（％）" not in df.columns:
+        return None
+    return round(df["主力セグメント利益集中度（％）"].mean(), 1)
 
 
 def evaluate_metric_diff(value: float, base_value: float) -> float:
@@ -258,7 +290,7 @@ def evaluate_against_industry(company_row: dict, industry: str) -> dict:
     for metric, base_value in thresholds.items():
         company_value = company_row.get(metric)
         if company_value is None:
-            result[metric] = {"score": 0.0, "judgement": "データなし"}
+            result[metric] = {"score": None, "judgement": "データなし"}
             continue
         if metric == "平均年齢（歳）":
             score, judgement = evaluate_age_with_tenure(company_value, base_value, company_row.get("創業年"))
@@ -275,9 +307,31 @@ def evaluate_against_industry(company_row: dict, industry: str) -> dict:
 
 
 def calculate_company_score_pct(comparison: dict) -> float:
-    total = sum(v["score"] for v in comparison.values())
-    max_possible = 30 + 45 + 30
+    total = 0.0
+    max_possible = 0.0
+    for metric, info in comparison.items():
+        if info["score"] is None:
+            # データなし（スキップ）の指標は評価から除外する
+            continue
+        weight = 45 if metric == "平均年齢（歳）" else 30
+        total += info["score"]
+        max_possible += weight
+    if max_possible == 0:
+        return 0.0
     return max(-100.0, min(100.0, total / max_possible * 100))
+
+
+def describe_segment_concentration(company_value, industry_avg):
+    if company_value is None or industry_avg is None:
+        return None
+    diff = company_value - industry_avg
+    if diff >= 15:
+        note = "特定事業への依存度が業界平均より高めです（1事業に利益が偏っています）"
+    elif diff <= -15:
+        note = "事業が業界平均より分散されており、特定事業への依存は低めです"
+    else:
+        note = "業界平均並みの事業構成です"
+    return f"主力セグメント利益集中度：{company_value:.0f}%（業界平均{industry_avg:.0f}%）→ {note}"
 
 
 _HEADLINE_RAW = [
@@ -422,6 +476,42 @@ HEADLINE_DICTIONARY = {
 }
 _SORTED_HEADLINE_KEYS = sorted(HEADLINE_DICTIONARY.keys(), key=len, reverse=True)
 
+EXPECTED_HEADLINE_COUNT = 133
+
+
+def validate_headline_dictionary():
+    errors = []
+    warnings = []
+    if len(HEADLINE_DICTIONARY) != EXPECTED_HEADLINE_COUNT:
+        errors.append(f"登録語数が{EXPECTED_HEADLINE_COUNT}語ではありません：{len(HEADLINE_DICTIONARY)}語")
+
+    required_fields = {"score", "category", "target", "direction", "frequency"}
+    for key, info in HEADLINE_DICTIONARY.items():
+        if not key:
+            errors.append("空の見出し語があります")
+            continue
+        missing = required_fields - set(info.keys())
+        if missing:
+            errors.append(f"「{key}」: 必須項目が不足しています → {missing}")
+
+    keys = list(HEADLINE_DICTIONARY.keys())
+    for short in keys:
+        for long in keys:
+            if short == long or len(short) >= len(long):
+                continue
+            if short in long:
+                short_score = HEADLINE_DICTIONARY[short]["score"]
+                long_score = HEADLINE_DICTIONARY[long]["score"]
+                if (short_score > 0) != (long_score > 0) and short_score != 0 and long_score != 0:
+                    warnings.append(
+                        f"「{short}」({short_score:+d})が「{long}」({long_score:+d})に含まれており、"
+                        "符号が逆です（順位ウェイト適用前に必ず長い語からマッチさせる設計で対応済み）"
+                    )
+    return errors, warnings
+
+
+HEADLINE_DICTIONARY_ERRORS, HEADLINE_DICTIONARY_WARNINGS = validate_headline_dictionary()
+
 
 def match_headline(text: str):
     if not text:
@@ -444,7 +534,6 @@ def calculate_market_sentiment(rankings: list) -> dict:
     category_counts = {}
     details = []
     total = len(rankings)
-
     for i, text in enumerate(rankings):
         rank = i + 1
         if not text.strip():
@@ -459,7 +548,6 @@ def calculate_market_sentiment(rankings: list) -> dict:
             details.append({"rank": rank, "text": text, "keyword": key, "score": info["score"]})
         else:
             details.append({"rank": rank, "text": text, "keyword": None, "score": None})
-
     sentiment = weighted_sum / weight_sum if weight_sum > 0 else None
     return {"sentiment": sentiment, "category_breakdown": category_counts, "details": details}
 
@@ -539,8 +627,22 @@ EXPECTED_TYPICAL_MAX = {
     "平均年収（万）": 1500,
     "平均年齢（歳）": 65,
     "海外売上比率（％）": 100,
+    "営業利益率（％）": 40,
+    "売上高成長率（％）": 50,
+    "営業利益成長率（％）": 80,
+    "平均勤続年数（年）": 40,
+    "来期成長率予想（％）": 50,
+    "営業CFマージン（％）": 40,
+    "主力セグメント利益集中度（％）": 100,
 }
-POSITIVE_ONLY_METRICS = {"平均年収（万）", "平均年齢（歳）", "海外売上比率（％）"}
+POSITIVE_ONLY_METRICS = {
+    "平均年収（万）", "平均年齢（歳）", "海外売上比率（％）",
+    "平均勤続年数（年）", "主力セグメント利益集中度（％）",
+}
+SIGNED_METRICS = {
+    "営業利益率（％）", "売上高成長率（％）", "営業利益成長率（％）",
+    "来期成長率予想（％）", "営業CFマージン（％）",
+}
 
 
 def validate_metrics(values: dict):
@@ -548,31 +650,42 @@ def validate_metrics(values: dict):
     needs_confirmation = False
     is_extreme_outlier = False
     messages = []
+
     for metric, value in values.items():
+        if value is None:
+            # 未入力／スキップされた指標は検証対象外（「データなし」として扱う）
+            continue
+
         if metric in POSITIVE_ONLY_METRICS and value < 0:
             has_negative_error = True
             messages.append(f"❌「{metric}」はマイナスの値を取りえません。修正してください。（入力値：{value}）")
             continue
+
         if metric == "海外売上比率（％）":
             if value > 100:
                 needs_confirmation = True
                 messages.append(f"⚠️「{metric}」が100％を超えています。入力に誤りがないかご確認ください。")
             continue
+
         typical_max = EXPECTED_TYPICAL_MAX.get(metric)
         if typical_max is None:
             continue
-        if value >= typical_max * 10:
+
+        check_value = abs(value) if metric in SIGNED_METRICS else value
+
+        if check_value >= typical_max * 10:
             is_extreme_outlier = True
             messages.append(
-                f"🚨「{metric}」が想定の10倍程度（{typical_max * 10}以上）です。"
+                f"🚨「{metric}」が想定の10倍程度（絶対値{typical_max * 10}以上）です。"
                 "異常値と判断し、この結果はデータベースには保存されません。"
             )
-        elif value >= typical_max * 3:
+        elif check_value >= typical_max * 3:
             needs_confirmation = True
             messages.append(
-                f"⚠️「{metric}」が想定範囲の3倍近く（{typical_max * 3}以上）です。"
+                f"⚠️「{metric}」が想定範囲の3倍近く（絶対値{typical_max * 3}以上）です。"
                 "入力に間違いがないかご確認の上、チェックしてください。"
             )
+
     return has_negative_error, needs_confirmation, is_extreme_outlier, messages
 
 
@@ -582,6 +695,40 @@ def validate_founding_year(founding_year: int):
     if founding_year < 1850:
         return False, f"⚠️「創業年」が古すぎます（入力値：{founding_year}）。入力に誤りがないかご確認ください。"
     return True, ""
+
+
+# 「データが四季報に載っていない／わからない」ことを表すための入力。
+# 空欄のほか、カンマなどの記号を入力してもスキップ扱いになる。
+SKIP_INPUT_SYMBOLS = {"", ",", "、", "，", "-", "ー", "－", "‐", "―", "なし", "N/A", "n/a"}
+
+
+def parse_optional_metric(raw_value: str):
+    """テキスト入力を数値に変換する。
+
+    未入力や「,」などの記号が入力された場合は「データなし」とみなし (None, None) を返す。
+    数値として解釈できない場合は (None, エラーメッセージ) を返す。
+    """
+    text = (raw_value or "").strip()
+    if text in SKIP_INPUT_SYMBOLS:
+        return None, None
+    normalized = text.replace(",", "").replace("，", "").replace("%", "").replace("％", "")
+    try:
+        return float(normalized), None
+    except ValueError:
+        return None, (
+            f"「{raw_value}」を数値として認識できません。"
+            "数値を入力するか、データが無い場合は空欄または「,」にしてスキップしてください。"
+        )
+
+
+def calculate_operating_margin(operating_profit, revenue):
+    """四季報に記載の営業利益と売上高から営業利益率（％）を自動計算する。
+
+    どちらかが未入力、または売上高が0の場合は計算できないため None を返す。
+    """
+    if operating_profit is None or revenue is None or revenue == 0:
+        return None
+    return round(operating_profit / revenue * 100, 1)
 
 
 def get_user_role(user) -> str:
@@ -621,7 +768,7 @@ def page_login():
 
 def page_title():
     st.title("📊 就活生のための企業データ分析ツール")
-    st.write("平均年収・平均年齢（創業年考慮）・海外売上比率と、四季報の見出し語から企業の傾向を分析します。")
+    st.write("財務指標・人材指標・四季報の見出し語から企業の傾向を多角的に分析します。")
     user = st.session_state["auth_user"]
     st.caption(f"ログイン中：{user.email}")
     col1, col2 = st.columns([3, 1])
@@ -646,8 +793,8 @@ def page_disclaimer():
         st.subheader("企業分析ツール　ご利用にあたって")
         st.markdown("""
 第一条（目的）
-本プログラムは、公開情報等をもとにした平均年収・平均年齢・海外売上比率・創業年・
-四季報の見出し語等の指標により、業界内での企業の傾向を把握するための参考情報提供ツールです。
+本プログラムは、公開情報等をもとにした財務指標・人材指標・四季報の見出し語等の
+指標により、業界内での企業の傾向を把握するための参考情報提供ツールです。
 
 第二条（断定的表現の排除）
 本ツールが示す評価スコアは機械的な計算結果であり、
@@ -688,12 +835,22 @@ def page_company_data():
         return
 
     thresholds = calculate_industry_threshold(industry)
+    seg_avg = calculate_industry_avg_segment_concentration(industry)
+
     st.caption(
-        "この業界の基準値（代表企業の平均から自動算出）：　"
         f"平均年収 {thresholds['平均年収（万）']}万円　/　"
         f"平均年齢 {thresholds['平均年齢（歳）']}歳　/　"
         f"海外売上比率 {thresholds['海外売上比率（％）']}％"
     )
+    with st.expander("業界基準値の詳細（Sランク指標）を見る"):
+        st.write(f"営業利益率：{thresholds['営業利益率（％）']}％")
+        st.write(f"売上高成長率：{thresholds['売上高成長率（％）']}％")
+        st.write(f"営業利益成長率：{thresholds['営業利益成長率（％）']}％")
+        st.write(f"平均勤続年数：{thresholds['平均勤続年数（年）']}年")
+        st.write(f"来期成長率予想：{thresholds['来期成長率予想（％）']}％")
+        st.write(f"営業CFマージン：{thresholds['営業CFマージン（％）']}％")
+        if seg_avg is not None:
+            st.write(f"主力セグメント利益集中度（参考情報・スコア対象外）：{seg_avg}％")
 
     st.subheader("企業データ一覧")
     st.dataframe(df, use_container_width=True)
@@ -711,22 +868,112 @@ def page_company_data():
                 comparison = evaluate_against_industry(company_row, industry)
                 st.session_state["comparison_result"] = comparison
                 st.session_state["company_score_pct"] = calculate_company_score_pct(comparison)
+                st.session_state["segment_note"] = describe_segment_concentration(
+                    company_row.get("主力セグメント利益集中度（％）"), seg_avg
+                )
                 st.success(f"「{company_name}」を業界基準と比較しました")
 
         if st.session_state["search_not_found"]:
             st.warning("該当企業が見つかりません。データを直接入力してください。")
+            st.caption(
+                "四季報に載っていない・わからない項目は、空欄のままか「,」などの記号を入力すると"
+                "「データなし」としてスキップされます（業界平均で穴埋めせず、評価からも除外されます）。"
+            )
             my_company = st.text_input("企業名", value=company_name or "マイカンパニー", key="manual_company")
             my_income = st.number_input("平均年収（万）", value=400, key="manual_income")
             my_age = st.number_input("平均年齢（歳）", value=40, key="manual_age")
-            my_overseas = st.number_input("海外売上比率（％）", value=30, key="manual_overseas")
+            my_overseas_raw = st.text_input(
+                "海外売上比率（％）　※不明なら空欄または「,」でスキップ可",
+                value="30",
+                key="manual_overseas",
+            )
             my_founding_year = st.number_input(
                 "創業年（西暦）", value=2010, min_value=1850, max_value=CURRENT_YEAR, key="manual_founding_year"
             )
+
+            with st.expander("詳細指標を入力（任意・不明な項目はスキップ可）", expanded=True):
+                st.caption(
+                    "営業利益率は自動計算されます。四季報に記載されている「営業利益」と「売上高」の"
+                    "数値をそのまま入力してください（単位は百万円・億円などどちらでも構いませんが、"
+                    "2つの単位は揃えてください）。"
+                )
+                my_operating_profit_raw = st.text_input(
+                    "営業利益　※不明なら空欄でスキップ可", value="", key="manual_operating_profit"
+                )
+                my_revenue_raw = st.text_input(
+                    "売上高（営業利益と同じ単位）　※不明なら空欄でスキップ可", value="", key="manual_revenue"
+                )
+                my_operating_profit, op_profit_error = parse_optional_metric(my_operating_profit_raw)
+                my_revenue, revenue_error = parse_optional_metric(my_revenue_raw)
+                my_op_margin = calculate_operating_margin(my_operating_profit, my_revenue)
+                if my_op_margin is not None:
+                    st.caption(f"→ 自動計算された営業利益率：{my_op_margin:.1f}％")
+                elif my_operating_profit is not None or my_revenue is not None:
+                    st.caption(
+                        "→ 営業利益・売上高のどちらか一方しか入力されていないため、"
+                        "営業利益率は「データなし」として扱われます。"
+                    )
+
+                my_rev_growth_raw = st.text_input(
+                    "売上高成長率（％）　※不明なら空欄または「,」でスキップ可",
+                    value=str(thresholds["売上高成長率（％）"]),
+                    key="manual_rev_growth",
+                )
+                my_op_growth_raw = st.text_input(
+                    "営業利益成長率（％）　※不明なら空欄または「,」でスキップ可",
+                    value=str(thresholds["営業利益成長率（％）"]),
+                    key="manual_op_growth",
+                )
+                my_tenure_raw = st.text_input(
+                    "平均勤続年数（年）　※不明なら空欄または「,」でスキップ可",
+                    value=str(thresholds["平均勤続年数（年）"]),
+                    key="manual_tenure",
+                )
+                my_forecast_raw = st.text_input(
+                    "来期成長率予想（％）　※不明なら空欄または「,」でスキップ可",
+                    value=str(thresholds["来期成長率予想（％）"]),
+                    key="manual_forecast",
+                )
+                my_cf_margin_raw = st.text_input(
+                    "営業CFマージン（％）　※不明なら空欄または「,」でスキップ可",
+                    value=str(thresholds["営業CFマージン（％）"]),
+                    key="manual_cf_margin",
+                )
+                my_seg_concentration_raw = st.text_input(
+                    "主力セグメント利益集中度（％・参考情報）　※不明なら空欄または「,」でスキップ可",
+                    value=str(seg_avg) if seg_avg is not None else "",
+                    key="manual_seg_concentration",
+                )
+
+            my_overseas, overseas_error = parse_optional_metric(my_overseas_raw)
+            my_rev_growth, rev_growth_error = parse_optional_metric(my_rev_growth_raw)
+            my_op_growth, op_growth_error = parse_optional_metric(my_op_growth_raw)
+            my_tenure, tenure_error = parse_optional_metric(my_tenure_raw)
+            my_forecast, forecast_error = parse_optional_metric(my_forecast_raw)
+            my_cf_margin, cf_margin_error = parse_optional_metric(my_cf_margin_raw)
+            my_seg_concentration, seg_error = parse_optional_metric(my_seg_concentration_raw)
+
+            parse_errors = [
+                msg for msg in [
+                    op_profit_error, revenue_error, overseas_error, rev_growth_error,
+                    op_growth_error, tenure_error, forecast_error, cf_margin_error, seg_error,
+                ]
+                if msg
+            ]
+            for msg in parse_errors:
+                st.write(f"❌ {msg}")
 
             values = {
                 "平均年収（万）": my_income,
                 "平均年齢（歳）": my_age,
                 "海外売上比率（％）": my_overseas,
+                "営業利益率（％）": my_op_margin,
+                "売上高成長率（％）": my_rev_growth,
+                "営業利益成長率（％）": my_op_growth,
+                "平均勤続年数（年）": my_tenure,
+                "来期成長率予想（％）": my_forecast,
+                "営業CFマージン（％）": my_cf_margin,
+                "主力セグメント利益集中度（％）": my_seg_concentration,
             }
             has_negative_error, needs_confirmation, is_extreme_outlier, messages = validate_metrics(values)
             year_ok, year_message = validate_founding_year(my_founding_year)
@@ -739,7 +986,9 @@ def page_company_data():
             if needs_confirmation:
                 confirmed = st.checkbox("入力内容に間違いがないことを確認しました", key="manual_confirm_checkbox")
 
-            submit_disabled = has_negative_error or (not year_ok) or (needs_confirmation and not confirmed)
+            submit_disabled = (
+                has_negative_error or (not year_ok) or (needs_confirmation and not confirmed) or bool(parse_errors)
+            )
 
             if st.button("この内容で比較する", disabled=submit_disabled):
                 company_row = {"企業名": my_company, "創業年": my_founding_year, **values}
@@ -747,23 +996,55 @@ def page_company_data():
                 st.session_state["selected_company"] = my_company
                 st.session_state["comparison_result"] = comparison
                 st.session_state["company_score_pct"] = calculate_company_score_pct(comparison)
+                st.session_state["segment_note"] = describe_segment_concentration(my_seg_concentration, seg_avg)
                 st.session_state["skip_save"] = is_extreme_outlier
                 st.session_state["search_not_found"] = False
 
                 if not is_extreme_outlier:
+                    insert_payload = {
+                        "industry": industry,
+                        "company_name": my_company,
+                        "income": my_income,
+                        "age": my_age,
+                        "founding_year": my_founding_year,
+                        # スキップされた項目は None（NULL）として保存される。
+                        # ※companiesテーブル側に対応する列が無いと登録は失敗するので、
+                        #   その場合は下に表示されるSQLで列を追加してください。
+                        "overseas_ratio": my_overseas,
+                        "operating_margin": my_op_margin,
+                        "revenue_growth": my_rev_growth,
+                        "operating_profit_growth": my_op_growth,
+                        "avg_tenure": my_tenure,
+                        "next_year_growth_forecast": my_forecast,
+                        "operating_cf_margin": my_cf_margin,
+                        "segment_concentration": my_seg_concentration,
+                    }
                     try:
-                        supabase.table("companies").insert({
-                            "industry": industry,
-                            "company_name": my_company,
-                            "income": my_income,
-                            "age": my_age,
-                            "overseas_ratio": my_overseas,
-                            "founding_year": my_founding_year,
-                        }).execute()
+                        supabase.table("companies").insert(insert_payload).execute()
                         fetch_companies_from_db.clear()
                         st.success(f"「{my_company}」のデータを比較し、企業データベースにも登録しました")
                     except Exception as e:
-                        st.warning(f"比較はできましたが、企業データベースへの登録に失敗しました：{e}")
+                        error_text = str(e)
+                        st.warning(f"比較はできましたが、企業データベースへの登録に失敗しました：{error_text}")
+                        if "Could not find the" in error_text and "column" in error_text:
+                            st.info(
+                                "Supabaseの`companies`テーブルに、このアプリが保存しようとしている列が"
+                                "存在していないようです。下記SQLをSupabaseのSQL Editorで実行し、"
+                                "不足している列を追加してから再度お試しください。"
+                            )
+                            st.code(
+                                "alter table companies\n"
+                                "  add column if not exists founding_year integer,\n"
+                                "  add column if not exists overseas_ratio numeric,\n"
+                                "  add column if not exists operating_margin numeric,\n"
+                                "  add column if not exists revenue_growth numeric,\n"
+                                "  add column if not exists operating_profit_growth numeric,\n"
+                                "  add column if not exists avg_tenure numeric,\n"
+                                "  add column if not exists next_year_growth_forecast numeric,\n"
+                                "  add column if not exists operating_cf_margin numeric,\n"
+                                "  add column if not exists segment_concentration numeric;",
+                                language="sql",
+                            )
                 else:
                     st.success(f"「{my_company}」のデータを比較しました（異常値のため企業データベースには登録しません）")
 
@@ -771,6 +1052,8 @@ def page_company_data():
         st.subheader(f"「{st.session_state['selected_company']}」の比較結果")
         for metric, info in st.session_state["comparison_result"].items():
             st.write(f"・{metric}：{info['judgement']}")
+        if st.session_state.get("segment_note"):
+            st.caption(st.session_state["segment_note"])
         st.caption(f"企業データスコア：{st.session_state['company_score_pct']:.0f}%（-100〜100の範囲）")
 
     st.subheader("指標比較グラフ")
@@ -804,7 +1087,6 @@ def page_reporter_comment():
     )
 
     headline = st.text_input("記者コメントの見出し（対象企業のもの）")
-
     preview = calculate_company_headline_score(headline) if headline.strip() else None
     if headline.strip() and preview is None:
         st.caption("⚠️ 見出し辞書に一致するキーワードが見つかりませんでした（評価には反映されません）")
@@ -866,13 +1148,14 @@ def page_result():
         st.subheader("業界基準値との比較")
         for metric, info in comparison.items():
             st.write(f"・{metric}：{info['judgement']}")
+        if st.session_state.get("segment_note"):
+            st.caption(st.session_state["segment_note"])
 
     if detail:
         st.subheader("四季報見出しの分析")
         c = detail.get("company")
         market_sentiment = detail.get("market_sentiment")
         relative = detail.get("relative")
-
         if c:
             rare_note = "（📌 市場で非常に珍しい表現です）" if c["is_rare"] else ""
             st.write(f"対象企業の見出し：「{c['keyword']}」（{c['category']}／スコア{c['score']:+d}）{rare_note}")
@@ -881,7 +1164,6 @@ def page_result():
         if relative is not None:
             mark = "🟢" if relative > 0 else ("🔴" if relative < 0 else "⚪")
             st.write(f"{mark} 市場平均との差：{relative:+.2f}（プラスなら市場より強い見出し）")
-
         breakdown = detail.get("market_category_breakdown") or {}
         if breakdown:
             total = sum(breakdown.values())
@@ -953,7 +1235,12 @@ def page_help():
     with tab_text:
         st.write(
             "平均年齢と創業年をあわせて見ましょう。創業からかなり経っているのに"
-            "平均年齢が低い企業は、早期退職者が多い可能性があります（本ツールのスコアにも反映されます）。"
+            "平均年齢が低い企業は、早期退職者が多い可能性があります。"
+        )
+        st.write(
+            "営業利益率・売上高成長率・営業利益成長率は本業の稼ぐ力と成長性を見る基本指標です。"
+            "平均勤続年数は人材の定着度、営業CFマージンは利益がどれだけ実際の現金として"
+            "入ってきているかを示します。数字上の利益と現金の動きがズレている場合は要注意です。"
         )
         st.write(
             "四季報の見出し語は、対象企業だけでなく市場全体のランキングと比べることが重要です。"
@@ -962,12 +1249,23 @@ def page_help():
         )
 
     with tab_dict:
-        st.write("四季報の主な見出し語とスコアの対応表です。")
+        st.write(f"四季報の見出し語{EXPECTED_HEADLINE_COUNT}語の完全一覧です。")
+        if HEADLINE_DICTIONARY_ERRORS:
+            for e in HEADLINE_DICTIONARY_ERRORS:
+                st.error(f"辞書エラー：{e}")
+        if HEADLINE_DICTIONARY_WARNINGS:
+            with st.expander(f"⚠️ 包含関係の注意（{len(HEADLINE_DICTIONARY_WARNINGS)}件）"):
+                for w in HEADLINE_DICTIONARY_WARNINGS:
+                    st.write(f"・{w}")
         dict_df = pd.DataFrame([
-            {"見出し": k, "スコア": v["score"], "カテゴリ": v["category"], "出現数": v["frequency"]}
-            for k, v in HEADLINE_DICTIONARY.items()
-        ]).sort_values("スコア", ascending=False)
-        st.dataframe(dict_df, use_container_width=True, height=400)
+            {
+                "No.": i + 1, "見出し": k, "スコア": v["score"], "カテゴリ": v["category"],
+                "対象": v["target"], "方向性": v["direction"], "出現数": v["frequency"],
+            }
+            for i, (k, v) in enumerate(HEADLINE_DICTIONARY.items())
+        ])
+        st.dataframe(dict_df, use_container_width=True, height=600, hide_index=True)
+        st.caption(f"登録語数：{len(dict_df)}語")
 
     st.write("---")
     if st.button("戻る"):
@@ -995,6 +1293,15 @@ def page_admin():
         return
 
     st.success(f"管理者として認証済み（{user.email}）")
+
+    with st.expander(f"📖 見出し辞書の健全性チェック（登録{len(HEADLINE_DICTIONARY)}語）"):
+        if not HEADLINE_DICTIONARY_ERRORS:
+            st.success("エラーなし")
+        for e in HEADLINE_DICTIONARY_ERRORS:
+            st.error(e)
+        for w in HEADLINE_DICTIONARY_WARNINGS:
+            st.warning(w)
+
     st.write("登録データ一覧")
     data = supabase.table("results").select("*").execute().data
     if data:
@@ -1021,7 +1328,7 @@ def page_admin():
         file_name="data.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    if st.button("管理者画面を閉じてトップへ"):
+    if st.button("ログアウトしてトップへ"):
         st.session_state["is_admin_authed"] = False
         goto("title")
 
