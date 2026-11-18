@@ -398,7 +398,10 @@ def extract_texts(df: pd.DataFrame) -> dict:
 def get_client():
     from supabase import create_client
 
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
+    url, key = _env("SUPABASE_URL"), _env("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        fail("SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY を設定してください（DBに書き込まない確認だけなら --dry-run）")
+    return create_client(url.rstrip("/"), key)
 
 
 def fetch_existing(client) -> dict:
@@ -513,10 +516,17 @@ def main():
     args = ap.parse_args()
 
     load_dotenv_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
-    key = os.environ.get("EDINET_API_KEY")
+    key = _env("EDINET_API_KEY")
     if not key:
-        sys.exit("EDINET_API_KEY が設定されていません（環境変数か、このフォルダの .env に書いてください）")
+        fail("EDINET_API_KEY が設定されていません（環境変数か、このフォルダの .env に書いてください）")
     _SECRETS.append(key)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        # 値そのものは出さず、形式だけを確認して表示する（Secrets の貼り間違いを見つけやすくする）
+        url, sk = _env("SUPABASE_URL"), _env("SUPABASE_SERVICE_ROLE_KEY")
+        print("::notice title=設定の形式チェック::"
+              f"EDINET_API_KEY {len(key)}文字 / "
+              f"SUPABASE_URL {'OK' if url.startswith('https://') and '.supabase.co' in url else '形式が違う'} / "
+              f"SUPABASE_SERVICE_ROLE_KEY {'OK' if sk.startswith('sb_secret_') or sk.count('.') == 2 else '形式が違う（Secret key を入れてください）'}")
     if args.inspect:
         inspect(args.inspect, key)
         return
@@ -524,7 +534,7 @@ def main():
     end = date.fromisoformat(args.end) if args.end else date.today()
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=14)
     if start > end:
-        sys.exit("--start が --end より後になっています")
+        fail("--start が --end より後になっています")
 
     codes = load_codelist(args.codelist_file).set_index("edinet_code")
     client = None if args.dry_run else get_client()
@@ -546,7 +556,7 @@ def main():
                     candidates[code] = d
         except EdinetApiError as e:
             # キー不正などは何日分繰り返しても同じなので即終了
-            sys.exit(redact(str(e)))
+            fail(str(e))
         except requests.RequestException as e:
             log.warning("%s の一覧取得に失敗: %s", day, e)
         time.sleep(SLEEP_SEC)
@@ -611,10 +621,25 @@ def _flush(client, batch, text_batch, done, failed):
     return done, failed
 
 
+def _env(name: str) -> str:
+    """環境変数を読む。Secrets に貼るときに紛れ込みやすい前後の空白・引用符を取り除く。"""
+    return (os.environ.get(name) or "").strip().strip('"').strip("'").strip()
+
+
+def fail(message: str):
+    """エラー終了する。GitHub Actions では、ログインしなくても見える「注釈」にもエラーを出す。"""
+    message = redact(message)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        tail = "\n".join(message.strip().splitlines()[-12:])  # トレースバックは末尾が要点
+        escaped = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=EDINET取り込み失敗::{escaped}", flush=True)
+    sys.exit(message)
+
+
 if __name__ == "__main__":
     try:
         main()
     except Exception:
         import traceback
 
-        sys.exit(redact(traceback.format_exc()))  # エラー文に含まれるURLからキーを伏せる
+        fail(traceback.format_exc())  # エラー文に含まれるURLからキーを伏せる

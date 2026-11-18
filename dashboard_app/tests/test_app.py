@@ -154,6 +154,20 @@ def test_db_failure_falls_back_to_sample(make_app):
     assert any("サンプル（架空）" in w.value for w in at.warning)
 
 
+def test_chart_hides_metrics_without_data(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    options = next(s for s in at.selectbox if s.label == "表示する指標").options
+    assert "平均年収（万）" in options and "営業利益率（％）" in options
+    assert "海外売上比率（％）" not in options and "来期成長率予想（％）" not in options
+    assert any("グラフの選択肢から外しています" in c.value for c in at.caption)
+
+
+def test_chart_keeps_all_metrics_for_sample_data(make_app):
+    at = make_app("company_data", db_fail=True, selected_industry="1.電機・電子機器")
+    options = next(s for s in at.selectbox if s.label == "表示する指標").options
+    assert "海外売上比率（％）" in options  # サンプルは全指標がそろっている
+
+
 def test_edinet_search_and_median(make_app):
     at = make_app("company_data", selected_industry="9.輸送用機器")
     assert not at.exception

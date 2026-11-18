@@ -149,6 +149,21 @@ def test_dotenv_inline_comment_and_quotes(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 # main() を通しで（EDINET API と Supabase は偽物）
 # --------------------------------------------------------------------------
+def test_env_strips_pasted_spaces_and_quotes(monkeypatch):
+    monkeypatch.setenv("T_KEY", '  "abc123"\n')
+    assert E._env("T_KEY") == "abc123"
+
+
+def test_fail_writes_github_annotation_without_key(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(E, "_SECRETS", ["SECRETKEY123"])
+    with pytest.raises(SystemExit):
+        E.fail("Traceback\n  url?Subscription-Key=SECRETKEY123\nRuntimeError: boom")
+    out = capsys.readouterr().out
+    assert out.startswith("::error title=EDINET取り込み失敗::")
+    assert "%0A" in out and "boom" in out and "SECRETKEY123" not in out
+
+
 def make_codelist(path):
     header = "EDINETコード,提出種別,上場区分,連結の有無,資本金,決算日,提出者名,提出者名（英字）,提出者名（ヨミ）,所在地,提出者業種,証券コード,提出者法人番号"
     lines = [

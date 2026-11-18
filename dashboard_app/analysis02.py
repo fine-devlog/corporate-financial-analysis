@@ -1268,9 +1268,31 @@ def render_manual_input_form(industry: str, thresholds: dict, display_df: pd.Dat
                 st.info(SCHEMA_HINT)
 
 
+MIN_CHART_COVERAGE = 0.2  # 業界の2割以上の企業に値がある指標だけをグラフの選択肢に出す
+
+
+def chartable_metrics(display_df: pd.DataFrame) -> tuple[list, list]:
+    """【修正】海外売上比率のように EDINET から取れずほぼ空の指標は、グラフにしても意味がないので除く。"""
+    usable, skipped = [], []
+    for metric in METRIC_COLUMNS:
+        count = pd.to_numeric(display_df[metric], errors="coerce").notna().sum()
+        if count >= max(MIN_SAMPLES_FOR_BASELINE, len(display_df) * MIN_CHART_COVERAGE):
+            usable.append(metric)
+        else:
+            skipped.append(metric)
+    return usable, skipped
+
+
 def render_metric_chart(display_df: pd.DataFrame, thresholds: dict):
     st.subheader("指標比較グラフ")
-    metric_to_plot = st.selectbox("表示する指標", METRIC_COLUMNS)
+    usable, skipped = chartable_metrics(display_df)
+    if not usable:
+        st.caption("グラフにできる指標がありません。")
+        return
+    metric_to_plot = st.selectbox("表示する指標", usable)
+    if skipped:
+        names = "、".join(m.split("（")[0] for m in skipped)
+        st.caption(f"※ {names} はデータのある企業が少ないため、グラフの選択肢から外しています（四季報で確認してください）。")
     selected = st.session_state.get("selected_company")
     top_n = 30
 
