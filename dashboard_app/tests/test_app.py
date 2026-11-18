@@ -123,6 +123,15 @@ def test_signup_email_not_authorized(monkeypatch):
     assert any("確認メールを送れなかった" in e.value for e in at.error)
 
 
+def test_signup_already_registered(monkeypatch):
+    def refuse(creds):
+        raise RuntimeError("User already registered")
+
+    at = login_page_with_auth(monkeypatch, sign_up=refuse)
+    fill_signup(at)
+    assert any("登録済みです" in e.value for e in at.error)
+
+
 def test_login_email_not_confirmed(monkeypatch):
     def refuse(creds):
         raise RuntimeError("Email not confirmed")

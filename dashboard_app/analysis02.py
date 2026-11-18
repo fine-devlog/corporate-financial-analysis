@@ -982,6 +982,8 @@ def describe_auth_error(error: Exception, action: str) -> str:
                 "（管理者向け：Supabase の確認メール設定か SMTP 設定を見直してください）")
     if "rate limit" in text:
         return "短時間に操作が集中しています。しばらく時間をおいてから、もう一度お試しください。"
+    if "already registered" in text or "already exists" in text:
+        return "このメールアドレスは登録済みです。「ログイン」タブからログインしてください。"
     if "invalid login credentials" in text:
         return "メールアドレスまたはパスワードが正しくありません。"
     if "password" in text and ("weak" in text or "at least" in text):
