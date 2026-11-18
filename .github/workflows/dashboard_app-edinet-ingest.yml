@@ -1,0 +1,43 @@
+name: dashboard_app EDINET ingest
+
+on:
+  schedule:
+    - cron: "0 22 * * *"   # 毎日 07:00 JST
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "開始日 (YYYY-MM-DD)。空なら直近14日"
+        required: false
+      end:
+        description: "終了日 (YYYY-MM-DD)"
+        required: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: dashboard_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests pandas supabase
+      - name: Run ingest
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          START: ${{ github.event.inputs.start }}
+          END: ${{ github.event.inputs.end }}
+        run: |
+          if [ -z "$EDINET_API_KEY" ] || [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "Secrets が未登録のため取り込みをスキップします（Settings → Secrets and variables → Actions）"
+            exit 0
+          fi
+          ARGS=""
+          if [ -n "$START" ]; then ARGS="$ARGS --start $START"; fi
+          if [ -n "$END" ]; then ARGS="$ARGS --end $END"; fi
+          python edinet_ingest.py $ARGS

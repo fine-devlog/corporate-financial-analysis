@@ -1,0 +1,21 @@
+name: dashboard_app tests
+
+on:
+  push:
+    paths: ["dashboard_app/**", ".github/workflows/dashboard_app-tests.yml"]
+  pull_request:
+    paths: ["dashboard_app/**", ".github/workflows/dashboard_app-tests.yml"]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: pytest -q
