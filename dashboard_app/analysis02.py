@@ -656,6 +656,9 @@ _NORMALIZED_HEADLINE_KEYS = sorted(
 )
 
 EXPECTED_HEADLINE_COUNT = 133
+# 見出し語と出現数の出典（スコア等は独自に付与）
+HEADLINE_SOURCE_NAME = "会社四季報オンライン（東洋経済新報社）"
+HEADLINE_SOURCE_URL = "https://shikiho.toyokeizai.net/headwords"
 
 
 def validate_headline_dictionary():
@@ -1762,6 +1765,10 @@ def page_help():
         ])
         st.dataframe(dict_df, width="stretch", height=600, hide_index=True)
         st.caption(f"登録語数：{len(dict_df)}語")
+        st.caption(
+            f"出典：見出し語と出現数は「{HEADLINE_SOURCE_NAME}」の見出し語一覧（{HEADLINE_SOURCE_URL}）を参考にしました。"
+            "スコア・カテゴリ・対象・方向性は、本ツールが生成AIの補助を受けて独自に付けたもので、同サイトの見解ではありません。"
+        )
 
     st.write("---")
     if st.button("戻る"):
