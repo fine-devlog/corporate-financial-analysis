@@ -67,6 +67,9 @@ EDINET API ──(edinet_ingest.py：毎日 GitHub Actions)──▶ Supabase (P
    - **Publishable key**（`sb_publishable_...`）：アプリ用
    - **Secret key**（`sb_secret_...`）：取り込みスクリプト専用。アプリや Git には絶対に入れない
 3. （公開する場合）Authentication → URL Configuration の Site URL を公開したアプリのURLにする
+4. **新規登録のメール確認**：Supabase 標準のメール送信は、プロジェクトのチームメンバー宛てにしか送れない（1時間に2通まで）。
+   - 確認メールなしで運用する：Authentication → Sign In / Providers → Email の「Confirm email」をオフ（登録後すぐログインできる）
+   - 確認メールを使う：Authentication → Emails → SMTP Settings で独自のメールサーバーを設定する
 
 ### 2. EDINET API キー
 [EDINET API キー発行画面](https://api.edinet-fsa.go.jp/api/auth/index.aspx?mode=1) から取得（ブラウザのポップアップ許可が必要）

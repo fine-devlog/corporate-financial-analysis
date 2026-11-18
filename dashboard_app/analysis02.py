@@ -971,6 +971,26 @@ def _json_safe(value):
     return value
 
 
+def describe_auth_error(error: Exception, action: str) -> str:
+    """Supabase Auth のエラーを、利用者が次に何をすればよいか分かる日本語にする。"""
+    text = str(error).lower()
+    if "email not confirmed" in text:
+        return "メールアドレスの確認が済んでいません。届いた確認メールのリンクを開いてから、ログインしてください。"
+    if "not authorized" in text:
+        # Supabase 標準のメール送信は、プロジェクトのチームメンバー宛てにしか送れない
+        return ("確認メールを送れなかったため、登録できませんでした。"
+                "（管理者向け：Supabase の確認メール設定か SMTP 設定を見直してください）")
+    if "rate limit" in text:
+        return "短時間に操作が集中しています。しばらく時間をおいてから、もう一度お試しください。"
+    if "invalid login credentials" in text:
+        return "メールアドレスまたはパスワードが正しくありません。"
+    if "password" in text and ("weak" in text or "at least" in text):
+        return "パスワードが条件を満たしていません。より長い、推測されにくいパスワードにしてください。"
+    if "email" in text and "invalid" in text:
+        return "メールアドレスの形式が正しくありません。"
+    return f"{action}に失敗しました：{error}"
+
+
 def page_login():
     st.title("🔐 ログイン")
     st.write("本ツールの利用にはログインが必要です")
@@ -980,12 +1000,13 @@ def page_login():
         password = st.text_input("パスワード", type="password", key="login_password")
         if st.button("ログイン", type="primary"):
             try:
-                res = get_supabase().auth.sign_in_with_password({"email": email, "password": password})
+                res = get_supabase().auth.sign_in_with_password({"email": email.strip(), "password": password})
                 st.session_state["auth_user"] = res.user
                 st.session_state.pop("login_password", None)
                 st.rerun()
-            except Exception:
-                st.error("メールアドレスまたはパスワードが正しくありません。")
+            except Exception as e:
+                # 【修正】旧版は何のエラーでも「パスワードが違う」と表示していた（メール未確認でも）
+                st.error(describe_auth_error(e, "ログイン"))
     with tab_signup:
         new_email = st.text_input("メールアドレス", key="signup_email")
         new_password = st.text_input("パスワード（8文字以上）", type="password", key="signup_password")
@@ -994,10 +1015,18 @@ def page_login():
                 st.error("パスワードは8文字以上にしてください。")
             else:
                 try:
-                    get_supabase().auth.sign_up({"email": new_email, "password": new_password})
-                    st.success("確認メールを送信しました。メール内のリンクから認証を完了してください。")
+                    res = get_supabase().auth.sign_up({"email": new_email.strip(), "password": new_password})
                 except Exception as e:
-                    st.error(f"登録に失敗しました：{e}")
+                    st.error(describe_auth_error(e, "登録"))
+                else:
+                    if res.session is not None:
+                        # Supabase で「メール確認」をオフにしている場合は、その場でログインできる
+                        st.session_state["auth_user"] = res.user
+                        st.rerun()
+                    st.success(
+                        "確認メールを送信しました。メール内のリンクを開いてから、ログインしてください。"
+                        "（届かない場合は迷惑メールフォルダも確認してください）"
+                    )
 
 
 def page_title():

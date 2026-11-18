@@ -82,6 +82,58 @@ def test_login_page_without_session():
     assert at.title[0].value.startswith("🔐")
 
 
+def login_page_with_auth(monkeypatch, sign_up=None, sign_in=None):
+    import supabase
+
+    auth = types.SimpleNamespace(sign_up=sign_up, sign_in_with_password=sign_in)
+    monkeypatch.setattr(supabase, "create_client",
+                        lambda *a, **k: types.SimpleNamespace(auth=auth, table=lambda n: FakeQuery(n, False)))
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.secrets["SUPABASE_URL"] = "https://example.supabase.co"
+    at.secrets["SUPABASE_KEY"] = "sb_publishable_test"
+    return at.run()
+
+
+def fill_signup(at):
+    at.text_input(key="signup_email").input("new@example.com")
+    at.text_input(key="signup_password").input("password1234")
+    return click(at, "登録する")
+
+
+def test_signup_without_email_confirmation_logs_in(monkeypatch):
+    at = login_page_with_auth(monkeypatch, sign_up=lambda creds: types.SimpleNamespace(session=object(), user=USER))
+    fill_signup(at)
+    assert not at.exception
+    assert at.session_state["auth_user"] is USER
+
+
+def test_signup_with_email_confirmation(monkeypatch):
+    at = login_page_with_auth(monkeypatch, sign_up=lambda creds: types.SimpleNamespace(session=None, user=USER))
+    fill_signup(at)
+    assert any("確認メールを送信しました" in s.value for s in at.success)
+    assert at.session_state["auth_user"] is None
+
+
+def test_signup_email_not_authorized(monkeypatch):
+    def refuse(creds):
+        raise RuntimeError("Email address not authorized")
+
+    at = login_page_with_auth(monkeypatch, sign_up=refuse)
+    fill_signup(at)
+    assert any("確認メールを送れなかった" in e.value for e in at.error)
+
+
+def test_login_email_not_confirmed(monkeypatch):
+    def refuse(creds):
+        raise RuntimeError("Email not confirmed")
+
+    at = login_page_with_auth(monkeypatch, sign_in=refuse)
+    at.text_input(key="login_email").input("new@example.com")
+    at.text_input(key="login_password").input("password1234")
+    click(at, "ログイン")
+    assert any("確認が済んでいません" in e.value for e in at.error)
+
+
 @pytest.mark.parametrize("page", ["title", "disclaimer", "industry_select", "help"])
 def test_simple_pages_render(make_app, page):
     assert not make_app(page).exception
