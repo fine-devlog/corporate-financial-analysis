@@ -251,3 +251,77 @@ def test_main_end_to_end(tmp_path, monkeypatch):
     row = writes["companies"][0]
     assert (row["income"], row["operating_margin"], row["revenue_growth"]) == (900.0, 10.0, 25.0)
     assert writes["company_texts"][0]["business_risks"] == "為替リスク"
+
+
+# --------------------------------------------------------------------------
+# 年収の単位補正・セグメント・業界の分類
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("man,expected", [
+    (650, 650.0),          # 普通の値はそのまま
+    (3517.6, 3517.6),      # 持株会社などの高い値もありうる範囲ならそのまま
+    (875900, 875.9),       # 千円を円として付けたような桁ずれ（実データで発生）
+    (0.5, 500.0),          # 逆向きの桁ずれ（実データで発生）
+    (6001, 600.1),
+])
+def test_normalize_salary(man, expected):
+    assert E.normalize_salary_man(man * 10000) == expected
+
+
+@pytest.mark.parametrize("name,industry", [
+    ("Energy", "11.エネルギー・資源"),
+    ("InformationCommunications", "3.通信"),
+    ("CATV", "3.通信"),
+    ("FinancialITSolutions", "2.IT・ソフト・SI"),  # 「Financial」より「IT」を優先
+    ("Consulting", "16.サービス・運輸・レジャー"),
+    ("Automobile", "9.輸送用機器"),               # 「mobile」で通信にしない
+    ("HumanResources", "16.サービス・運輸・レジャー"),  # 「resource」でエネルギーにしない
+    ("Environment", None),                         # 「iron」で鉄鋼にしない
+    ("EngineeringServices", None),                 # 「engine」で機械にしない
+    ("FoodService", "16.サービス・運輸・レジャー"),
+    ("Food", "6.食品"),
+    ("Shokuhin", None),                            # 分からないものは推定しない
+])
+def test_classify_segment(name, industry):
+    assert E.classify_segment(name) == industry
+
+
+def test_extract_segments_and_industries():
+    """実際の書類（TOKAIホールディングス）と同じ形のデータ。日本基準は Segments（複数形）。"""
+    pre = "CurrentYearDuration_jpcrp030000-asr_E25165-000"
+    rows = [
+        (P + "RevenuesFromExternalCustomers", pre + "EnergyReportableSegmentsMember", "当期", "その他", "102937"),
+        (P + "RevenuesFromExternalCustomers", pre + "InformationCommunicationsReportableSegmentsMember", "当期", "その他", "61823"),
+        (P + "RevenuesFromExternalCustomers", pre + "CATVReportableSegmentsMember", "当期", "その他", "37389"),
+        (P + "RevenuesFromExternalCustomers", pre + "BuildingEquipmentAndRealEstateReportableSegmentsMember", "当期", "その他", "26724"),
+        (P + "RevenuesFromExternalCustomers", pre + "AquaReportableSegmentsMember", "当期", "その他", "10087"),
+        (P + "RevenuesFromExternalCustomers", "CurrentYearDuration_ReportableSegmentsMember", "当期", "その他", "238960"),
+        (P + "RevenuesFromExternalCustomers", pre.replace("Current", "Prior1") + "EnergyReportableSegmentsMember", "前期", "その他", "1"),
+        ("jppfs_cor:OperatingIncome", pre + "EnergyReportableSegmentsMember", "当期", "その他", "60"),
+        ("jppfs_cor:OperatingIncome", pre + "CATVReportableSegmentsMember", "当期", "その他", "40"),
+    ]
+    segments = E.extract_segments(make_df(rows))
+    assert sorted(s["name"] for s in segments) == ["Aqua", "BuildingEquipmentAndRealEstate", "CATV", "Energy", "InformationCommunications"]
+    assert E.segment_concentration(segments) == 60.0
+    result = E.decide_industries("12.商社", "卸売業", segments, {})
+    assert result["industry"] == "12.商社"  # 主業種は EDINET の業種のまま
+    assert result["industries"] == ["12.商社", "11.エネルギー・資源", "3.通信"]  # 3割以上の事業の業界を追加
+    assert result["industry_shares"]["3.通信"] == pytest.approx(0.415, abs=0.001)
+
+
+def test_information_company_classified_by_text():
+    telecom = "当社は移動体通信事業を営み、携帯電話と光回線、ブロードバンド、データセンター、MVNOを提供しています。"
+    software = "当社はソフトウェアの受託開発とシステム開発、SaaSを提供しています。通信サービスも一部あります。"
+    assert E.decide_industries("2.IT・ソフト・SI", "情報・通信業", [], {"business_description": telecom})["industry"] == "3.通信"
+    assert E.decide_industries("2.IT・ソフト・SI", "情報・通信業", [], {"business_description": software})["industry"] == "2.IT・ソフト・SI"
+    # 情報・通信業以外は文章で変えない
+    assert E.decide_industries("6.食品", "食料品", [], {"business_description": telecom})["industry"] == "6.食品"
+
+
+def test_segments_take_priority_over_text_for_information_companies():
+    """ソフィアHDの実例：文章には通信の語が多いが、売上の8割は調剤薬局。"""
+    telecom_text = "インターネット接続、データセンター、通信サービス、光回線、ブロードバンドを提供。"
+    segments = [{"name": "PharmacyBusiness", "revenue": 84}, {"name": "InternetBusiness", "revenue": 3},
+                {"name": "Other", "revenue": 13}]
+    r = E.decide_industries("2.IT・ソフト・SI", "情報・通信業", segments, {"business_description": telecom_text})
+    assert r["industry"] == "2.IT・ソフト・SI"
+    assert r["industries"] == ["2.IT・ソフト・SI", "15.小売"]

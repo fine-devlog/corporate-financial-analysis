@@ -25,6 +25,8 @@ COMPANIES = [
     edinet_row(4, "スズキ株式会社", "7269", 700, 8.0, 500.0),  # 外れ値
     edinet_row(5, "トヨタ紡織株式会社", "3116", 650, 3.0, -2.5),
     {"id": 99, "company_name": "手入力社", "source": "user", "income": 5000},  # 業界基準には使わない
+    {**edinet_row(6, "東海ガス通信株式会社", "9999", 600, 4.0, 1.0),
+     "industry": "11.エネルギー・資源", "industry_shares": {"9.輸送用機器": 0.35}},  # 兼業で表示される会社
 ]
 TEXTS = {"doc_id": "S100TEST", "period_end": "2026-03-31", "business_description": "自動車を作る。",
          "management_policy": None, "business_risks": "為替リスク。"}
@@ -171,8 +173,8 @@ def test_chart_keeps_all_metrics_for_sample_data(make_app):
 def test_edinet_search_and_median(make_app):
     at = make_app("company_data", selected_industry="9.輸送用機器")
     assert not at.exception
-    # 手入力社(5000万)は中央値に入らない／中央値なので外れ値に引っ張られない
-    assert any("平均年収 800.0万円" in c.value for c in at.caption)
+    # 手入力社(5000万)は中央値に入らない／兼業の会社(600万)は入る／中央値なので外れ値に引っ張られない
+    assert any("平均年収 750.0万円" in c.value for c in at.caption)
     at.text_input(key="company_search_input").input("トヨタ").run()
     click(at, "検索")
     assert at.selectbox(key="candidate_select").options == [
@@ -206,3 +208,32 @@ def test_result_page_ai_summary(make_app, monkeypatch):
     assert not at.exception
     assert calls == ["openai"] and at.session_state["ai_calls"] == 1
     assert any("openaiの要約" in m.value for m in at.markdown)
+
+
+def test_secondary_industry_is_labeled(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    table = at.dataframe[0].value
+    reasons = dict(zip(table["企業名"], table["区分"]))
+    assert reasons["トヨタ自動車株式会社"] == "主業種"
+    assert reasons["東海ガス通信株式会社"] == "兼業（売上の35%）"
+    assert "主業種" not in table.columns and "EDINETコード" not in table.columns  # 内部用の列は出さない
+
+
+def test_baseline_panel_hides_metrics_without_data(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    headline = next(c.value for c in at.caption if c.value.startswith("業界中央値："))
+    assert "海外売上比率" not in headline
+    lines = [m.value for m in at.markdown]
+    assert not any(v.startswith("来期成長率予想：") for v in lines)
+    assert any("来期成長率予想" in c.value and "表示していません" in c.value for c in at.caption)
+
+
+def test_falls_back_when_industries_column_missing(make_app, monkeypatch):
+    """DBに industries 列を追加する前でも、従来どおり主業種で表示できる。"""
+    def contains(self, *a, **k):
+        raise RuntimeError("column companies.industries does not exist")
+
+    monkeypatch.setattr(FakeQuery, "contains", contains, raising=False)
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    assert not at.exception
+    assert any("EDINET（有価証券報告書）の実データ" in i.value for i in at.info)

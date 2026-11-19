@@ -129,7 +129,8 @@ METRIC_COLUMNS = [
 ]
 INFO_ONLY_COLUMNS = ["主力セグメント利益集中度（％）"]
 ALL_DATA_COLUMNS = METRIC_COLUMNS + ["創業年"] + INFO_ONLY_COLUMNS
-META_COLUMNS = ["証券コード", "決算期", "出典", "EDINETコード"]
+META_COLUMNS = ["区分", "証券コード", "決算期", "出典", "EDINETコード", "主業種", "業界別売上比率"]
+HIDDEN_COLUMNS = ["EDINETコード", "主業種", "業界別売上比率"]  # 内部用（一覧表には出さない）
 DISPLAY_COLUMNS = ["企業名", *ALL_DATA_COLUMNS, *META_COLUMNS]
 
 SOURCE_LABELS = {"edinet": "EDINET", "user": "手入力", "sample": "サンプル"}
@@ -269,8 +270,12 @@ DB_COLUMN_RENAME = {
     "period_end": "決算期",
     "source": "出典",
     "edinet_code": "EDINETコード",
+    "industry": "主業種",
+    "industry_shares": "業界別売上比率",
 }
 DB_SELECT = ",".join(["id", *DB_COLUMN_RENAME.keys()])
+# industries / industry_shares 列を追加する前のDBでも動くよう、旧形式の問い合わせも用意しておく
+DB_SELECT_LEGACY = ",".join(["id", *(c for c in DB_COLUMN_RENAME if c != "industry_shares")])
 PAGE_SIZE = 1000  # Supabase(PostgREST) の1リクエストあたりの既定上限
 
 SCHEMA_HINT = (
@@ -280,26 +285,30 @@ SCHEMA_HINT = (
 
 
 # 企業データは全員共通の公開情報という前提で、ユーザーをまたいでキャッシュする（_client はハッシュ対象外）
+def _fetch_pages(client: Client, industry: str, multi_industry: bool) -> list:
+    rows, start = [], 0
+    # 【修正】EDINET取り込み後は1業界で数百社になるため、1000件上限を超えてもページングで全件取る
+    while True:
+        query = client.table("companies").select(DB_SELECT if multi_industry else DB_SELECT_LEGACY)
+        # 【追加】売上の3割以上を占める事業がある企業は、複数の業界（industries 列）に表示する
+        query = query.contains("industries", [industry]) if multi_industry else query.eq("industry", industry)
+        batch = query.order("id").range(start, start + PAGE_SIZE - 1).execute().data
+        rows.extend(batch)
+        if len(batch) < PAGE_SIZE:
+            return rows
+        start += PAGE_SIZE
+
+
 @st.cache_data(ttl=600, show_spinner="企業データを読み込み中…")
 def fetch_companies_from_db(industry: str, _client: Client):
     """戻り値: (DataFrame, エラーメッセージ or None)"""
-    rows, start = [], 0
     try:
-        # 【修正】EDINET取り込み後は1業界で数百社になるため、1000件上限を超えてもページングで全件取る
-        while True:
-            batch = (
-                _client.table("companies")
-                .select(DB_SELECT)
-                .eq("industry", industry)
-                .order("id")
-                .range(start, start + PAGE_SIZE - 1)
-                .execute()
-                .data
-            )
-            rows.extend(batch)
-            if len(batch) < PAGE_SIZE:
-                break
-            start += PAGE_SIZE
+        try:
+            rows = _fetch_pages(_client, industry, multi_industry=True)
+        except Exception as e:
+            if "industr" not in str(e):
+                raise
+            rows = _fetch_pages(_client, industry, multi_industry=False)  # 列の追加前のDB
     except Exception as e:
         return pd.DataFrame(columns=DISPLAY_COLUMNS), str(e)
     if not rows:
@@ -336,7 +345,19 @@ def get_industry_data(industry: str) -> dict:
 
     frames = [f for f in (stats_df, user_df) if not f.empty]
     display_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=DISPLAY_COLUMNS)
+    if not display_df.empty:
+        display_df["区分"] = [listing_reason(row, industry) for _, row in display_df.iterrows()]
     return {"stats": stats_df, "display": display_df, "kind": kind, "error": error}
+
+
+def listing_reason(row, industry: str) -> str:
+    """この業界に表示されている理由（主業種か、売上の3割以上を占める兼業か）。"""
+    main = row.get("主業種")
+    if is_missing(main) or main == industry:
+        return "主業種"
+    shares = row.get("業界別売上比率")
+    share = shares.get(industry) if isinstance(shares, dict) else None
+    return f"兼業（売上の{share:.0%}）" if share else "兼業"
 
 
 def clean_row(series) -> dict:
@@ -955,6 +976,22 @@ def get_user_role(user) -> str:
         return "user"
 
 
+BASELINE_HEADLINE = [
+    ("平均年収（万）", "平均年収", "万円"),
+    ("平均年齢（歳）", "平均年齢", "歳"),
+    ("海外売上比率（％）", "海外売上比率", "％"),
+]
+BASELINE_DETAIL = [
+    ("営業利益率（％）", "営業利益率", "％"),
+    ("売上高成長率（％）", "売上高成長率", "％"),
+    ("営業利益成長率（％）", "営業利益成長率", "％"),
+    ("平均勤続年数（年）", "平均勤続年数", "年"),
+    ("来期成長率予想（％）", "来期成長率予想", "％"),
+    ("営業CFマージン（％）", "営業CFマージン", "％"),
+    ("主力セグメント利益集中度（％）", "主力セグメント利益集中度（参考情報・スコア対象外）", "％"),
+]
+
+
 def fmt_threshold(value, unit: str = "") -> str:
     return "データなし" if value is None else f"{value}{unit}"
 
@@ -1249,6 +1286,7 @@ def render_manual_input_form(industry: str, thresholds: dict, display_df: pd.Dat
             insert_payload = {
                 "source": "user",
                 "industry": industry,
+                "industries": [industry],
                 "company_name": my_company,
                 "income": values["平均年収（万）"],
                 "age": values["平均年齢（歳）"],
@@ -1353,26 +1391,26 @@ def page_company_data():
 
     thresholds = calculate_industry_threshold(industry)
 
-    st.caption(
-        f"業界中央値：平均年収 {fmt_threshold(thresholds.get('平均年収（万）'), '万円')}　/　"
-        f"平均年齢 {fmt_threshold(thresholds.get('平均年齢（歳）'), '歳')}　/　"
-        f"海外売上比率 {fmt_threshold(thresholds.get('海外売上比率（％）'), '％')}"
-    )
+    # 【修正】基準値が出せない指標（来期成長率予想など、EDINETから取れないもの）は表示しない
+    headline = [(label, thresholds.get(metric), unit) for metric, label, unit in BASELINE_HEADLINE
+                if thresholds.get(metric) is not None]
+    if headline:
+        st.caption("業界中央値：" + "　/　".join(f"{label} {value}{unit}" for label, value, unit in headline))
     with st.expander("業界基準値（中央値）の詳細を見る"):
-        st.write(f"営業利益率：{fmt_threshold(thresholds.get('営業利益率（％）'), '％')}")
-        st.write(f"売上高成長率：{fmt_threshold(thresholds.get('売上高成長率（％）'), '％')}")
-        st.write(f"営業利益成長率：{fmt_threshold(thresholds.get('営業利益成長率（％）'), '％')}")
-        st.write(f"平均勤続年数：{fmt_threshold(thresholds.get('平均勤続年数（年）'), '年')}")
-        st.write(f"来期成長率予想：{fmt_threshold(thresholds.get('来期成長率予想（％）'), '％')}")
-        st.write(f"営業CFマージン：{fmt_threshold(thresholds.get('営業CFマージン（％）'), '％')}")
-        seg_avg = thresholds.get("主力セグメント利益集中度（％）")
-        if seg_avg is not None:
-            st.write(f"主力セグメント利益集中度（参考情報・スコア対象外）：{seg_avg}％")
+        for metric, label, unit in BASELINE_DETAIL:
+            if thresholds.get(metric) is not None:
+                st.write(f"{label}：{thresholds[metric]}{unit}")
+        missing = [label for metric, label, _ in BASELINE_HEADLINE + BASELINE_DETAIL if thresholds.get(metric) is None]
+        if missing:
+            st.caption(f"※ {'、'.join(missing)} は比較できる企業が少ないため表示していません（四季報で確認してください）。")
+        n_secondary = int((display_df["区分"] != "主業種").sum()) if "区分" in display_df else 0
+        if n_secondary:
+            st.caption(f"※ 売上の3割以上をこの業界の事業が占める企業（{n_secondary}社）も含めて計算しています。")
 
     st.subheader(f"企業データ一覧（{len(display_df)}社）")
     table_df = display_df.copy()
     table_df["出典"] = table_df["出典"].map(lambda s: SOURCE_LABELS.get(s, s))
-    table_df = table_df.drop(columns=["EDINETコード"])
+    table_df = table_df.drop(columns=HIDDEN_COLUMNS)
     table_df = table_df.dropna(axis=1, how="all")  # 全社「データなし」の列は表示しない
     st.dataframe(table_df, width="stretch", hide_index=True)
 

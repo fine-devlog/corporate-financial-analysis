@@ -39,6 +39,16 @@ end $$;
 
 create index if not exists companies_industry_idx on companies (industry);
 
+-- 複数業界への表示（売上の3割以上を占める事業の業界にも表示する）
+--   industry        : 主業種
+--   industries      : 表示する業界の一覧（主業種＋兼業）
+--   industry_shares : セグメント売上から推定した業界ごとの売上比率（例 {"3.通信": 0.42}）
+alter table companies
+  add column if not exists industries text[],
+  add column if not exists industry_shares jsonb;
+update companies set industries = array[industry] where industries is null;
+create index if not exists companies_industries_idx on companies using gin (industries);
+
 alter table companies enable row level security;
 
 -- ログイン済みユーザーは全件読める（企業データは公開情報）
