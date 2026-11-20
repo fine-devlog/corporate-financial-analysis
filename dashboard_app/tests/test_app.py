@@ -429,17 +429,35 @@ def test_click_highlights_row_and_scrolls_to_search(make_app):
     assert not at.exception
     html = "\n".join(_html_bodies(at))
     assert 'id="company-search-anchor"' in html
-    assert 'getElementById("company-search-anchor")' in html and "scrollIntoView" in html
+    assert 'shikihoScrollToElement("company-search-anchor")' in html   # ゆっくりスクロールする
     # 選んだ行は表全体で色付けされる（表の値は数値の表示を整えたもの）
     assert at.dataframe[0].value["企業名"].tolist()[1] == "本田技研工業株式会社"
 
 
 def test_no_scroll_without_click(make_app):
     at = make_app("company_data", selected_industry="9.輸送用機器")
-    assert not any("scrollIntoView" in h for h in _html_bodies(at))
+    assert not any('shikihoScrollToElement("company-search-anchor")' in h for h in _html_bodies(at))
 
 
 def test_back_to_top_button_on_every_page(make_app):
     for page in ("title", "company_data", "help"):
         at = make_app(page, selected_industry="9.輸送用機器", prev_page="title")
         assert any("shikiho-to-top" in h for h in _html_bodies(at)), page
+
+
+def test_chart_has_hover_and_click(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    spec = _vega_specs(at)[0]
+    bars = spec["layer"][0]
+    # 重ねたグラフでは、Altair は選択の定義を一番上に移し、どの層に効くかを views で指定する
+    params = {p["name"]: p.get("views", []) for p in spec.get("params", [])}
+    assert bars["name"] in params["hover"] and bars["name"] in params["pick"]
+    assert bars["encoding"]["color"]["condition"]["value"] == "#F28E2B"  # カーソルを合わせた棒はオレンジ
+    assert bars["mark"]["cursor"] == "pointer"
+
+
+def test_smooth_scroll_helpers_installed(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    html = " ".join(_html_bodies(at))
+    assert "shikihoSmoothScrollTo" in html and "requestAnimationFrame" in html
+    assert "prefers-reduced-motion" in html

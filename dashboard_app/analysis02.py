@@ -15,6 +15,7 @@ from supabase import create_client, Client
 import ai_summary
 import company_names
 import shikiho_guide
+import ui_events
 
 st.set_page_config(
     page_title="就活生のための企業データ分析ツール",
@@ -103,7 +104,8 @@ ANALYSIS_KEYS = [
     "selected_edinet_code", "other_industry_hits",
 ]
 # 【修正】ウィジェットの入力値も残っていると、次の分析で前回の入力が表示されてしまう
-WIDGET_KEYS_TO_CLEAR = (["company_search_input", "candidate_select", "company_table", "last_table_pick"]
+WIDGET_KEYS_TO_CLEAR = (["company_search_input", "candidate_select", "company_table", "last_table_pick",
+                         "metric_chart", "last_chart_pick"]
                         + [f"rank_{i}" for i in range(15)])
 
 
@@ -1406,60 +1408,15 @@ def style_company_table(table_df: pd.DataFrame, selected_name):
 
 
 def scroll_to_element(element_id: str):
-    """【追加】ページをその要素の位置までなめらかにスクロールする（クリック後に変化した場所を見せる）。"""
-    nonce = datetime.now().timestamp()  # 毎回違う内容にして、スクリプトを確実に実行させる
-    st.html(
-        f"""<script>
-        // {nonce}
-        (function () {{
-          let tries = 0;
-          const go = () => {{
-            const el = document.getElementById("{element_id}");
-            if (el) {{ el.scrollIntoView({{behavior: "smooth", block: "start"}}); }}
-            else if (tries++ < 20) {{ setTimeout(go, 100); }}
-          }};
-          setTimeout(go, 150);
-        }})();
-        </script>""",
-        unsafe_allow_javascript=True,
-    )
+    """【追加】ページをその要素の位置までゆっくりスクロールする（クリック後に変化した場所を見せる）。"""
+    nonce = str(datetime.now().timestamp())  # 毎回違う内容にして、スクリプトを確実に実行させる
+    st.html(f"<script>{ui_events.scroll_to_element_js(element_id, nonce)}</script>", unsafe_allow_javascript=True)
 
 
 def render_back_to_top_button():
-    """【追加】下の方までスクロールしたら右下に出る「↑」ボタン。押すとページの一番上へなめらかに戻る。"""
-    st.html(
-        """<script>
-        (function () {
-          if (document.getElementById("shikiho-to-top")) return;
-          const scrollers = () => [
-            document.querySelector('[data-testid="stMain"]'),
-            document.querySelector('[data-testid="stAppViewContainer"]'),
-            document.scrollingElement,
-          ].filter(Boolean);
-          const btn = document.createElement("button");
-          btn.id = "shikiho-to-top";
-          btn.type = "button";
-          btn.textContent = "↑";
-          btn.title = "ページの一番上へ";
-          btn.setAttribute("aria-label", "ページの一番上へ");
-          Object.assign(btn.style, {
-            position: "fixed", right: "20px", bottom: "24px", zIndex: "999999",
-            width: "48px", height: "48px", borderRadius: "50%", border: "none",
-            background: "#4C72B0", color: "#ffffff", fontSize: "22px", cursor: "pointer",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.3)", display: "none",
-          });
-          btn.addEventListener("click", () => {
-            scrollers().forEach((el) => el.scrollTo({top: 0, behavior: "smooth"}));
-          });
-          document.body.appendChild(btn);
-          setInterval(() => {
-            const y = Math.max(0, ...scrollers().map((el) => el.scrollTop || 0));
-            btn.style.display = y > 400 ? "block" : "none";
-          }, 300);
-        })();
-        </script>""",
-        unsafe_allow_javascript=True,
-    )
+    """【追加】スクロールの補助と、下の方までスクロールしたら右下に出る「↑」ボタン。"""
+    st.html(f"<script>{ui_events.SCROLL_HELPERS_JS}{ui_events.BACK_TO_TOP_JS}</script>",
+            unsafe_allow_javascript=True)
 
 
 def select_company_from_table(event, display_df: pd.DataFrame, industry: str):
@@ -1468,20 +1425,33 @@ def select_company_from_table(event, display_df: pd.DataFrame, industry: str):
     表の下にある検索欄・候補・グラフは、この関数のあとに描かれるので、
     ここで値を入れておけば同じ画面更新の中で反映される。
     """
-    try:
-        selection = dict(event.selection)
-    except (AttributeError, TypeError):
-        selection = dict((event or {}).get("selection", {}))
     # クリックされたセル（行の位置, 列名）から行を取り出す。行の位置は、表を並べ替えても元の順番のまま
-    rows = [cell[0] for cell in selection.get("cells", [])] or list(selection.get("rows", []))
-    if not rows:
+    position = ui_events.clicked_table_row(event)
+    if position is None:
         st.session_state.pop("last_table_pick", None)
         return
-    position = rows[0]
     if position >= len(display_df) or st.session_state.get("last_table_pick") == position:
         return  # 同じ行が選ばれたままの再描画では、何もしない
     st.session_state["last_table_pick"] = position
-    index = display_df.index[position]
+    choose_company(display_df.index[position], display_df, industry)
+
+
+def select_company_from_chart(event, display_df: pd.DataFrame, industry: str):
+    """【追加】指標比較グラフの棒がクリックされたら、その企業を選ぶ（表のクリックと同じ動き）。"""
+    name = ui_events.clicked_chart_company(event)
+    if not name:
+        st.session_state.pop("last_chart_pick", None)
+        return
+    if st.session_state.get("last_chart_pick") == name:
+        return
+    st.session_state["last_chart_pick"] = name
+    matches = display_df.index[display_df["企業名"] == name]
+    if len(matches):
+        choose_company(matches[0], display_df, industry)
+
+
+def choose_company(index, display_df: pd.DataFrame, industry: str):
+    """一覧やグラフで選んだ企業を、検索欄に入れて業界と比較し、検索欄までスクロールする。"""
     company_row = clean_row(display_df.loc[index])
     st.session_state["company_search_input"] = company_row["企業名"]
     st.session_state["search_candidates"] = [index]
@@ -1524,8 +1494,10 @@ def render_metric_chart(display_df: pd.DataFrame, thresholds: dict):
     )
     st.caption(f"{len(plot_df)}社中、上位{min(top_n, len(plot_df))}社" + ("＋選択中の企業" if selected else "") + "を表示")
 
+    st.caption("👆 棒にカーソルを合わせると色が変わり、クリックするとその企業を選べます。")
     st.altair_chart(build_metric_chart(shown, metric_to_plot, thresholds.get(metric_to_plot), is_mobile_device()),
-                    width="stretch")
+                    width="stretch", key="metric_chart",
+                    on_select="rerun", selection_mode=[ui_events.CHART_PICK_PARAM])
 
 
 def short_company_labels(names: pd.Series) -> list:
@@ -1537,15 +1509,24 @@ def short_company_labels(names: pd.Series) -> list:
 
 
 BAR_HEIGHT_PX = 26  # スマホの横棒グラフで1社あたりの高さ
+HOVER_COLOR = "#F28E2B"  # カーソルを合わせた棒の色（選択中の赤・その他の青と区別できるオレンジ）
 
 
 def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool) -> alt.LayerChart:
     """指標比較グラフ。パソコンは縦棒、スマホは画面幅いっぱいの横棒（社名が読めるように）。"""
     order = shown["表示名"].tolist()
-    color = alt.Color(
-        "区分:N",
-        scale=alt.Scale(domain=["選択中の企業", "その他"], range=["#d62728", "#4C72B0"]),
-        legend=alt.Legend(title=None, orient="top"),
+    # 【追加】カーソルを合わせた棒をオレンジにする（どこを見ているか分かるように）／クリックで企業を選ぶ
+    hover = alt.selection_point(name=ui_events.CHART_HOVER_PARAM, on="pointerover", clear="pointerout",
+                                fields=["企業名"], empty=False)
+    pick = alt.selection_point(name=ui_events.CHART_PICK_PARAM, on="click", fields=["企業名"])
+    color = alt.condition(
+        hover,
+        alt.value(HOVER_COLOR),
+        alt.Color(
+            "区分:N",
+            scale=alt.Scale(domain=["選択中の企業", "その他"], range=["#d62728", "#4C72B0"]),
+            legend=alt.Legend(title=None, orient="top"),
+        ),
     )
     tooltip = [alt.Tooltip("企業名:N"), alt.Tooltip(f"{metric}:Q")]
     if mobile:
@@ -1567,7 +1548,7 @@ def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool)
         )
         rule_encoding = {"y": "業界中央値:Q"}
         height = 400
-    layers = [bars]
+    layers = [bars.mark_bar(cursor="pointer").add_params(hover, pick)]
     if baseline is not None:
         layers.append(
             alt.Chart(pd.DataFrame({"業界中央値": [baseline]}))
@@ -1617,6 +1598,7 @@ def page_company_data():
     # クリックされたセルは、表を描く前に session_state から読める。先に処理しておくと、
     # 選んだ行の色付けを同じ画面更新で反映できる
     select_company_from_table(st.session_state.get("company_table"), display_df, industry)
+    select_company_from_chart(st.session_state.get("metric_chart"), display_df, industry)
     # 【修正】"single-row" は行頭のチェック欄を押す方式で分かりにくいため、
     #   どのセルをクリックしてもその行を選んだことにする "single-cell" にした
     st.dataframe(style_company_table(table_df, st.session_state.get("selected_company")),
