@@ -12,6 +12,7 @@ import streamlit as st
 from supabase import create_client, Client
 
 import ai_summary
+import company_names
 
 st.set_page_config(
     page_title="就活生のための企業データ分析ツール",
@@ -65,6 +66,7 @@ def init_session_state():
         "reporter_detail": None,
         "segment_note": None,
         "search_candidates": [],
+        "other_industry_hits": [],
         "search_not_found": False,
         "skip_save": False,
         "manual_confirmed": False,
@@ -94,7 +96,7 @@ ANALYSIS_KEYS = [
     "company_score_pct", "reporter_score_pct", "reporter_weight",
     "reporter_level", "reporter_detail", "segment_note",
     "search_candidates", "search_not_found", "skip_save", "manual_confirmed",
-    "selected_edinet_code",
+    "selected_edinet_code", "other_industry_hits",
 ]
 # 【修正】ウィジェットの入力値も残っていると、次の分析で前回の入力が表示されてしまう
 WIDGET_KEYS_TO_CLEAR = ["company_search_input", "candidate_select"] + [f"rank_{i}" for i in range(15)]
@@ -955,17 +957,72 @@ def normalize_company_name(name) -> str:
     return s.lower()
 
 
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_name_table() -> pd.DataFrame:
+    """EDINET コードリスト（社名・英語名・読み仮名）。取得できなければ空の表（別名検索なしで動く）。"""
+    try:
+        return company_names.load_name_table()
+    except Exception:
+        return pd.DataFrame(columns=["edinet_code", "name", "name_en", "name_kana", "sec_code"])
+
+
 def search_companies(df: pd.DataFrame, query: str) -> list:
-    """一致した行の index を「完全一致 → 前方一致 → 部分一致」の順で返す。証券コード4桁でも引ける。"""
-    q = normalize_company_name(query)
+    """一致した行の index を一致の強い順に返す。
+
+    【追加】正式名の一部だけでなく、証券コード・英語名の頭文字（NRI）・英語名（nomura）・
+    読み仮名（のむら）・略称（野村総研）でも引けるようにした（EDINET のコードリストを利用、LLMは不使用）。
+    """
+    q = unicodedata.normalize("NFKC", query or "").strip()
     if not q:
         return []
-    names = df["企業名"].map(normalize_company_name)
-    codes = df["証券コード"].fillna("").astype(str)
-    exact = df.index[(names == q) | (codes == q)].tolist()
-    prefix = df.index[names.str.startswith(q) & ~df.index.isin(exact)].tolist()
-    partial = df.index[names.str.contains(q, regex=False) & ~df.index.isin(exact + prefix)].tolist()
-    return exact + prefix + partial
+    names = get_name_table().set_index("edinet_code")
+    ranked = []
+    for idx, row in df.iterrows():
+        code = row.get("EDINETコード")
+        alias = names.loc[code] if isinstance(code, str) and code in names.index else None
+        if str(row.get("証券コード") or "") == q:
+            rank = company_names.EXACT
+        else:
+            rank = company_names.match_rank(
+                q, row["企業名"],
+                alias["name_en"] if alias is not None else None,
+                alias["name_kana"] if alias is not None else None,
+            )
+        if rank is not None:
+            ranked.append((rank, idx))
+    return [idx for _, idx in sorted(ranked, key=lambda x: x[0])]
+
+
+def find_in_other_industries(query: str, current_industry: str) -> list:
+    """選んだ業界に見つからないとき、上場企業全体から探して、どの業界のデータにあるかを返す。"""
+    hits = company_names.search_names(query, get_name_table(), limit=5)
+    if hits.empty:
+        return []
+    try:
+        rows = (get_supabase().table("companies").select("edinet_code,company_name,industry,industries")
+                .in_("edinet_code", hits["edinet_code"].tolist()).execute().data)
+    except Exception:
+        rows = []
+    in_db = {r["edinet_code"]: r for r in rows}
+    results = []
+    for _, h in hits.iterrows():
+        r = in_db.get(h["edinet_code"])
+        industries = (r.get("industries") or [r.get("industry")]) if r else []
+        results.append({
+            "name": h["name"],
+            "industries": [i for i in industries if i and i != current_industry],
+            "in_current": bool(r) and current_industry in industries,
+            "has_data": bool(r),
+        })
+    return results
+
+
+def switch_industry_and_search(industry: str, company_name: str):
+    """別の業界に切り替えて、その企業を検索した状態にする（ボタンのコールバック）。"""
+    reset_analysis_state()
+    st.session_state["selected_industry"] = industry
+    st.session_state["company_search_input"] = company_name
+    st.session_state["pending_search"] = True
 
 
 def get_user_role(user) -> str:
@@ -1416,13 +1473,14 @@ def page_company_data():
 
     with st.expander("🔍 企業を検索する", expanded=True):
         query = st.text_input(
-            "企業名の一部 または 証券コード（4桁）", key="company_search_input",
-            placeholder="例：トヨタ / 7203",
+            "企業名・略称・英語名・読み仮名・証券コード（4桁）", key="company_search_input",
+            placeholder="例：トヨタ / 7203 / NRI / 野村総研 / のむら",
         )
-        if st.button("検索"):
+        if st.button("検索") or st.session_state.pop("pending_search", False):
             hits = search_companies(display_df, query)
             st.session_state["search_candidates"] = hits
             st.session_state["search_not_found"] = not hits
+            st.session_state["other_industry_hits"] = [] if hits else find_in_other_industries(query, industry)
             st.session_state.pop("candidate_select", None)
 
         candidates = [i for i in st.session_state["search_candidates"] if i in display_df.index]
@@ -1443,6 +1501,21 @@ def page_company_data():
                 st.success(f"「{company_row['企業名']}」を業界基準と比較しました")
 
         if st.session_state["search_not_found"]:
+            others = st.session_state.get("other_industry_hits") or []
+            movable = [o for o in others if o["industries"]]
+            if movable:
+                st.info("この業界には見つかりませんでしたが、別の業界のデータにありました。")
+                for n, o in enumerate(movable):
+                    for target in o["industries"]:
+                        st.button(
+                            f"「{o['name']}」を {target} で比較する",
+                            key=f"move_{n}_{target}",
+                            on_click=switch_industry_and_search, args=(target, o["name"]),
+                        )
+            no_data = [o["name"] for o in others if not o["has_data"]]
+            if no_data and not movable:
+                st.info(f"上場企業「{'」「'.join(no_data)}」が見つかりましたが、このツールの対象業種外か、"
+                        "まだ有報のデータがないため比較できません。")
             render_manual_input_form(industry, thresholds, display_df)
 
     if st.session_state["comparison_result"]:

@@ -407,7 +407,11 @@ MULTI_INDUSTRY_SHARE = 0.30  # 売上の3割以上を占める事業があれば
 # セグメント名（企業が付けた英語のID）に含まれる語 → 業界。上から順に判定し、最初に当たったものを採用。
 # 例: FinancialITSolutions は「IT」が先に当たるので金融ではなくIT
 SEGMENT_KEYWORDS = [
-    ("3.通信", ["telecom", "communication", "mobile", "broadband", "catv", "cabletelevision", "satellite"]),
+    # 「Communication(s)」単独はPR・広告会社でも使われ、「Mobile」単独はモバイルコンテンツでも使われるため、
+    # 通信と分かる組み合わせだけにした（実データでプラップジャパン等が誤って通信になった）
+    # 「MobilePhone」単独も携帯向けコンテンツ（エムアップ）で使われていたため外した
+    ("3.通信", ["telecom", "informationcommunication", "mobilecommunication", "mobileline",
+               "broadband", "catv", "cabletelevision", "satellite", "internetconnection"]),
     ("2.IT・ソフト・SI", ["software", "saas", "cloud", "systemintegration", "systemdevelopment",
                          "informationtechnology", "informationservice", "game", "it", "ict", "dx"]),
     ("5.医薬・バイオ", ["pharma", "drug", "biotech", "medicine"]),
@@ -419,6 +423,7 @@ SEGMENT_KEYWORDS = [
     ("16.サービス・運輸・レジャー", ["foodservice", "restaurant", "logistic", "transport", "railway", "bus",
                                  "taxi", "airline", "shipping", "warehous", "travel", "tourism", "hotel",
                                  "leisure", "amusement", "consult", "staffing", "humanresource", "education",
+                                 "temporaryemployee", "placement", "dispatch", "recruit",
                                  "nursing", "care", "advertis", "broadcast", "publish", "media", "security",
                                  "fitness", "wedding", "funeral", "outsourc"]),
     ("6.食品", ["food", "beverage", "drink", "dairy", "meat", "confection", "seafood", "brew", "beer",
@@ -426,7 +431,7 @@ SEGMENT_KEYWORDS = [
     ("7.アパレル・繊維", ["apparel", "fashion", "textile", "fiber", "fibre", "clothing"]),
     ("4.化学", ["chemical", "plastic", "resin", "polymer", "rubber", "glass", "cement", "paper", "pulp",
                "coating", "paint", "cosmetic"]),
-    ("1.電機・電子機器", ["electronic", "device", "semiconductor", "component", "precision", "instrument",
+    ("1.電機・電子機器", ["electronic", "electrical", "device", "semiconductor", "component", "precision", "instrument",
                        "optical", "camera", "imaging", "display", "battery", "appliance"]),
     ("8.機械・重工業", ["machinery", "machine", "robot", "engine"]),
     ("14.建設・不動産", ["realestate", "property", "properties", "construction", "building", "housing",
@@ -439,7 +444,7 @@ SEGMENT_KEYWORDS = [
 # 単語として一致したときだけ当てる語（部分一致だと Automobile→mobile、Environment→iron、
 # Engineering→engine のように誤爆するもの）
 _SHORT_TOKENS = {"it", "ict", "dx", "catv", "lpg", "gas", "oil", "bus", "care", "game",
-                 "mobile", "iron", "engine", "media", "store"}
+                 "mobile", "iron", "engine", "media", "store", "cement"}  # cement: Placement に当たらないように
 
 
 def _split_camel(name: str) -> list[str]:
@@ -449,7 +454,11 @@ def _split_camel(name: str) -> list[str]:
 def classify_segment(name: str):
     """セグメント名から業界を推定する。分からなければ None。"""
     tokens = _split_camel(name)
-    joined = ("".join(tokens)
+    joined = "".join(tokens)
+    # 通信「機器」の製造・販売や電気・通信インフラ機器は、通信サービスではなく電機（日東工業・萬世電機の実例）
+    joined = re.sub(r"telecommunications?(apparatus|equipment|device)", r"commsdevice", joined)
+    joined = re.sub(r"^electricalandtelecommunications?", "electricalequipment", joined)
+    joined = (joined
               .replace("humanresource", "staffing")   # HumanResources → エネルギーの resource と区別
               .replace("pharmacy", "retailshop")      # 調剤薬局・ドラッグストアは医薬品メーカーではなく小売
               .replace("drugstore", "retailshop"))    # （「drug」で医薬に当たらないよう先に置き換える）
@@ -684,6 +693,7 @@ def main():
     ap.add_argument("--force", action="store_true", help="取り込み済みの書類も再取得して上書きする")
     ap.add_argument("--inspect", metavar="DOC_ID")
     ap.add_argument("--limit", type=int, help="取り込む企業数の上限（お試し用）")
+    ap.add_argument("--only-codes", help="この EDINETコード（カンマ区切り）の企業だけ処理する")
     args = ap.parse_args()
 
     load_dotenv_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
@@ -710,6 +720,7 @@ def main():
     codes = load_codelist(args.codelist_file).set_index("edinet_code")
     client = None if args.dry_run else get_client()
     existing = {} if (args.dry_run or args.force) else fetch_existing(client)
+    only_codes = {c.strip() for c in args.only_codes.split(",") if c.strip()} if args.only_codes else None
 
     # 1) 対象日の有報を一覧化（同一企業は period_end が新しいものを採用）
     candidates: dict[str, dict] = {}
@@ -718,7 +729,7 @@ def main():
         try:
             for d in list_yuho(day, key):
                 code = d["edinetCode"]
-                if code not in codes.index:
+                if code not in codes.index or (only_codes and code not in only_codes):
                     continue
                 period_end = d.get("periodEnd") or ""
                 if period_end and period_end <= existing.get(code, ""):

@@ -2,6 +2,7 @@
 import types
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -25,16 +26,28 @@ COMPANIES = [
     edinet_row(4, "スズキ株式会社", "7269", 700, 8.0, 500.0),  # 外れ値
     edinet_row(5, "トヨタ紡織株式会社", "3116", 650, 3.0, -2.5),
     {"id": 99, "company_name": "手入力社", "source": "user", "income": 5000},  # 業界基準には使わない
+    {**edinet_row(5062, "株式会社野村総合研究所", "4307", 1200, 15.0, 5.0), "industry": "2.IT・ソフト・SI",
+     "industries": ["2.IT・ソフト・SI"]},
     {**edinet_row(6, "東海ガス通信株式会社", "9999", 600, 4.0, 1.0),
-     "industry": "11.エネルギー・資源", "industry_shares": {"9.輸送用機器": 0.35}},  # 兼業で表示される会社
+     "industry": "11.エネルギー・資源", "industries": ["11.エネルギー・資源", "9.輸送用機器"],
+     "industry_shares": {"9.輸送用機器": 0.35}},  # 兼業で表示される会社
 ]
 TEXTS = {"doc_id": "S100TEST", "period_end": "2026-03-31", "business_description": "自動車を作る。",
          "management_policy": None, "business_risks": "為替リスク。"}
 
 
+DEFAULT_INDUSTRY = "9.輸送用機器"  # industry を持たないテスト用の行はこの業界とみなす
+
+
+def industries_of(row):
+    return row.get("industries") or [row.get("industry", DEFAULT_INDUSTRY)]
+
+
 class FakeQuery:
+    """Supabase の問い合わせの偽物。業界・EDINETコードでの絞り込みは本物と同じように効かせる。"""
+
     def __init__(self, table, fail):
-        self.table, self.fail, self.rng = table, fail, (0, 999)
+        self.table, self.fail, self.rng, self.filters = table, fail, (0, 999), []
 
     def __getattr__(self, _):
         return lambda *a, **k: self
@@ -43,11 +56,43 @@ class FakeQuery:
         self.rng = (a, b)
         return self
 
+    def contains(self, column, values):
+        self.filters.append(lambda r: all(v in industries_of(r) for v in values))
+        return self
+
+    def eq(self, column, value):
+        if column == "industry":
+            self.filters.append(lambda r: r.get("industry", DEFAULT_INDUSTRY) == value)
+        return self
+
+    def in_(self, column, values):
+        self.filters.append(lambda r: r.get(column) in values)
+        return self
+
     def execute(self):
         if self.fail:
             raise ConnectionError("DB down")
         data = COMPANIES if self.table == "companies" else [TEXTS] if self.table == "company_texts" else []
+        data = [r for r in data if all(f(r) for f in self.filters)]
         return types.SimpleNamespace(data=data[self.rng[0]: self.rng[1] + 1])
+
+
+NAME_TABLE = pd.DataFrame({
+    "edinet_code": ["E00001", "E00002", "E00003", "E00004", "E00005", "E05062"],
+    "name": ["トヨタ自動車株式会社", "本田技研工業株式会社", "株式会社デンソー", "スズキ株式会社",
+             "トヨタ紡織株式会社", "株式会社野村総合研究所"],
+    "name_en": ["TOYOTA MOTOR CORPORATION", "HONDA MOTOR CO.,LTD.", "DENSO CORPORATION",
+                "SUZUKI MOTOR CORPORATION", "TOYOTA BOSHOKU CORPORATION", "Nomura Research Institute,Ltd."],
+    "name_kana": ["トヨタジドウシャカブシキカイシャ", "ホンダギケンコウギョウカブシキガイシャ", "カブシキガイシャデンソー",
+                  "スズキカブシキガイシャ", "トヨタボウショクカブシキガイシャ", "カブシキガイシャノムラソウゴウケンキュウショ"],
+    "sec_code": ["7203", "7267", "6902", "7269", "3116", "4307"],
+})
+
+
+@pytest.fixture(autouse=True)
+def fake_name_table(monkeypatch):
+    import company_names
+    monkeypatch.setattr(company_names, "load_name_table", lambda path=None: NAME_TABLE)
 
 
 @pytest.fixture
@@ -237,3 +282,35 @@ def test_falls_back_when_industries_column_missing(make_app, monkeypatch):
     at = make_app("company_data", selected_industry="9.輸送用機器")
     assert not at.exception
     assert any("EDINET（有価証券報告書）の実データ" in i.value for i in at.info)
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("ホンダ", "本田技研工業株式会社"),       # 読み仮名
+    ("honda", "本田技研工業株式会社"),        # 英語名
+    ("本田技研", "本田技研工業株式会社"),      # 前方一致
+    ("7269", "スズキ株式会社"),              # 証券コード
+])
+def test_search_by_alias(make_app, query, expected):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    at.text_input(key="company_search_input").input(query).run()
+    click(at, "検索")
+    assert at.selectbox(key="candidate_select").options[0].startswith(expected)
+
+
+def test_search_finds_company_in_other_industry(make_app):
+    """輸送用機器で「NRI」と入力 → IT業界の野村総合研究所に切り替えて比較できる。"""
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    at.text_input(key="company_search_input").input("NRI").run()
+    click(at, "検索")
+    assert any("別の業界のデータにありました" in i.value for i in at.info)
+    click(at, "「株式会社野村総合研究所」を 2.IT・ソフト・SI で比較する")
+    assert not at.exception
+    assert at.session_state["selected_industry"] == "2.IT・ソフト・SI"
+    assert at.selectbox(key="candidate_select").options[0].startswith("株式会社野村総合研究所")
+
+
+def test_unknown_company_goes_to_manual_input(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    at.text_input(key="company_search_input").input("存在しない架空商事").run()
+    click(at, "検索")
+    assert any("該当企業が見つかりません" in w.value for w in at.warning)

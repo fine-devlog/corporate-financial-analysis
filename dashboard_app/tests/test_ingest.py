@@ -280,6 +280,17 @@ def test_normalize_salary(man, expected):
     ("FoodService", "16.サービス・運輸・レジャー"),
     ("Food", "6.食品"),
     ("Shokuhin", None),                            # 分からないものは推定しない
+    # 以下は実データで誤判定していた例
+    ("ElectricalAndTelecommunicationsInfrastructureRelatedManufacturingConstructionAndServiceBusiness",
+     "1.電機・電子機器"),                            # 日東工業：電気・通信インフラ機器
+    ("AnElectronicDevideAndInformationAndTelecommunicationsApparatus", "1.電機・電子機器"),  # 萬世電機：通信機器
+    ("MobilePhoneBusiness", None),                 # エムアップ：携帯向けコンテンツ
+    ("MarketingCommunications", None),             # PR・広告会社
+    ("TemporaryEmployeePlacement", "16.サービス・運輸・レジャー"),  # Placement に cement が含まれる
+    ("CementBusiness", "4.化学"),
+    ("Telecommunications", "3.通信"),
+    ("MobileCommunication", "3.通信"),
+    ("ElectricPower", "11.エネルギー・資源"),
 ])
 def test_classify_segment(name, industry):
     assert E.classify_segment(name) == industry
