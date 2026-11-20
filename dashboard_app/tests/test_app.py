@@ -406,3 +406,40 @@ def test_clicking_any_cell_selects_company(make_app, column):
     assert at.session_state["comparison_result"]
     bars = _vega_specs(at)[0]["layer"][0]
     assert "本田技研工業" in bars["encoding"]["x"]["sort"]
+
+
+def _html_bodies(at):
+    bodies = []
+
+    def walk(node):
+        children = getattr(node, "children", None)
+        for ch in (children.values() if isinstance(children, dict) else children or []):
+            proto = getattr(ch, "proto", None)
+            if getattr(ch, "type", "") == "html" and proto is not None:
+                bodies.append(proto.body)
+            walk(ch)
+
+    walk(at._tree)
+    return bodies
+
+
+def test_click_highlights_row_and_scrolls_to_search(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器",
+                  company_table={"selection": {"rows": [], "columns": [], "cells": [(1, "企業名")]}})
+    assert not at.exception
+    html = "\n".join(_html_bodies(at))
+    assert 'id="company-search-anchor"' in html
+    assert 'getElementById("company-search-anchor")' in html and "scrollIntoView" in html
+    # 選んだ行は表全体で色付けされる（表の値は数値の表示を整えたもの）
+    assert at.dataframe[0].value["企業名"].tolist()[1] == "本田技研工業株式会社"
+
+
+def test_no_scroll_without_click(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    assert not any("scrollIntoView" in h for h in _html_bodies(at))
+
+
+def test_back_to_top_button_on_every_page(make_app):
+    for page in ("title", "company_data", "help"):
+        at = make_app(page, selected_industry="9.輸送用機器", prev_page="title")
+        assert any("shikiho-to-top" in h for h in _html_bodies(at)), page

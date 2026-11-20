@@ -1220,7 +1220,7 @@ def render_data_source_notice(data: dict):
             f"（最新の決算期：{latest_text}）。\n\n"
             "・平均年収・平均年齢・平均勤続年数は「提出会社（単体）」の値です。"
             "持株会社は従業員が少なく、年収が高めに出ることがあります。\n\n"
-            "・海外売上比率・創業年・来期成長率予想・主力セグメント集中度は有報の標準データから"
+            "・海外売上比率・創業年・来期成長率予想は有報の標準データから"
             "自動取得できないため「データなし」になります（四季報で確認してください）。"
         )
     elif data["kind"] == "sample":
@@ -1387,6 +1387,81 @@ def chartable_metrics(display_df: pd.DataFrame) -> tuple[list, list]:
     return usable, skipped
 
 
+SEARCH_ANCHOR_ID = "company-search-anchor"
+SELECTED_ROW_STYLE = "background-color: #fde2e1; color: #111111; font-weight: bold"
+
+
+def style_company_table(table_df: pd.DataFrame, selected_name):
+    """【追加】選んだ企業の行全体に色を付ける（クリックしたセルだけでなく、どの行かが分かるように）。
+
+    あわせて数値は小数第1位までにそろえる（設計メモ：小数第二位を四捨五入）。
+    """
+    formats = {c: ("{:.0f}" if c == "創業年" else "{:.1f}") for c in table_df.columns if c in ALL_DATA_COLUMNS}
+    styler = table_df.style.format(formats, na_rep="")
+    if selected_name:
+        styler = styler.apply(
+            lambda row: [SELECTED_ROW_STYLE if row["企業名"] == selected_name else "" for _ in row], axis=1
+        )
+    return styler
+
+
+def scroll_to_element(element_id: str):
+    """【追加】ページをその要素の位置までなめらかにスクロールする（クリック後に変化した場所を見せる）。"""
+    nonce = datetime.now().timestamp()  # 毎回違う内容にして、スクリプトを確実に実行させる
+    st.html(
+        f"""<script>
+        // {nonce}
+        (function () {{
+          let tries = 0;
+          const go = () => {{
+            const el = document.getElementById("{element_id}");
+            if (el) {{ el.scrollIntoView({{behavior: "smooth", block: "start"}}); }}
+            else if (tries++ < 20) {{ setTimeout(go, 100); }}
+          }};
+          setTimeout(go, 150);
+        }})();
+        </script>""",
+        unsafe_allow_javascript=True,
+    )
+
+
+def render_back_to_top_button():
+    """【追加】下の方までスクロールしたら右下に出る「↑」ボタン。押すとページの一番上へなめらかに戻る。"""
+    st.html(
+        """<script>
+        (function () {
+          if (document.getElementById("shikiho-to-top")) return;
+          const scrollers = () => [
+            document.querySelector('[data-testid="stMain"]'),
+            document.querySelector('[data-testid="stAppViewContainer"]'),
+            document.scrollingElement,
+          ].filter(Boolean);
+          const btn = document.createElement("button");
+          btn.id = "shikiho-to-top";
+          btn.type = "button";
+          btn.textContent = "↑";
+          btn.title = "ページの一番上へ";
+          btn.setAttribute("aria-label", "ページの一番上へ");
+          Object.assign(btn.style, {
+            position: "fixed", right: "20px", bottom: "24px", zIndex: "999999",
+            width: "48px", height: "48px", borderRadius: "50%", border: "none",
+            background: "#4C72B0", color: "#ffffff", fontSize: "22px", cursor: "pointer",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.3)", display: "none",
+          });
+          btn.addEventListener("click", () => {
+            scrollers().forEach((el) => el.scrollTo({top: 0, behavior: "smooth"}));
+          });
+          document.body.appendChild(btn);
+          setInterval(() => {
+            const y = Math.max(0, ...scrollers().map((el) => el.scrollTop || 0));
+            btn.style.display = y > 400 ? "block" : "none";
+          }, 300);
+        })();
+        </script>""",
+        unsafe_allow_javascript=True,
+    )
+
+
 def select_company_from_table(event, display_df: pd.DataFrame, industry: str):
     """【追加】企業データ一覧で行がクリックされたら、検索欄に入れて業界と比較する。
 
@@ -1415,6 +1490,7 @@ def select_company_from_table(event, display_df: pd.DataFrame, industry: str):
     st.session_state["candidate_select"] = index
     apply_comparison(company_row["企業名"], company_row, industry)
     st.session_state["skip_save"] = False
+    st.session_state["scroll_to_search"] = True
     st.toast(f"「{company_row['企業名']}」を選びました。下の比較結果とグラフで確認できます。")
 
 
@@ -1483,7 +1559,9 @@ def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool)
         height = max(240, BAR_HEIGHT_PX * len(shown))
     else:
         bars = alt.Chart(shown).mark_bar().encode(
-            x=alt.X("表示名:N", sort=order, title="企業名", axis=alt.Axis(labelAngle=-60)),
+            # labelOverlap=False：実際のブラウザ幅だと重なりを避けて社名が間引かれていたため、全社表示する
+            x=alt.X("表示名:N", sort=order, title="企業名",
+                    axis=alt.Axis(labelAngle=-60, labelOverlap=False, labelLimit=120)),
             y=alt.Y(f"{metric}:Q", title=metric),
             color=color, tooltip=tooltip,
         )
@@ -1536,12 +1614,16 @@ def page_company_data():
     table_df = table_df.drop(columns=HIDDEN_COLUMNS)
     table_df = table_df.dropna(axis=1, how="all")  # 全社「データなし」の列は表示しない
     st.caption("👆 企業の行のどこか（企業名でも数値でも）をクリックすると、その企業を業界と比較し、グラフで赤く表示します。")
+    # クリックされたセルは、表を描く前に session_state から読める。先に処理しておくと、
+    # 選んだ行の色付けを同じ画面更新で反映できる
+    select_company_from_table(st.session_state.get("company_table"), display_df, industry)
     # 【修正】"single-row" は行頭のチェック欄を押す方式で分かりにくいため、
     #   どのセルをクリックしてもその行を選んだことにする "single-cell" にした
-    event = st.dataframe(table_df, width="stretch", hide_index=True,
-                         key="company_table", on_select="rerun", selection_mode="single-cell")
-    select_company_from_table(event, display_df, industry)
+    st.dataframe(style_company_table(table_df, st.session_state.get("selected_company")),
+                 width="stretch", hide_index=True,
+                 key="company_table", on_select="rerun", selection_mode="single-cell")
 
+    st.html(f'<div id="{SEARCH_ANCHOR_ID}"></div>')
     with st.expander("🔍 企業を検索する", expanded=True):
         query = st.text_input(
             "企業名・略称・英語名・読み仮名・証券コード（4桁）", key="company_search_input",
@@ -1588,6 +1670,10 @@ def page_company_data():
                 st.info(f"上場企業「{'」「'.join(no_data)}」が見つかりましたが、このツールの対象業種外か、"
                         "まだ有報のデータがないため比較できません。")
             render_manual_input_form(industry, thresholds, display_df)
+
+    # 【追加】一覧の行をクリックしたあとは、企業名が入った検索欄までなめらかにスクロールする
+    if st.session_state.pop("scroll_to_search", False):
+        scroll_to_element(SEARCH_ANCHOR_ID)
 
     if st.session_state["comparison_result"]:
         st.subheader(f"「{st.session_state['selected_company']}」の比較結果")
@@ -2144,4 +2230,5 @@ if st.session_state["auth_user"] is None:
     page_login()
 else:
     render_sidebar_guide()
+    render_back_to_top_button()
     PAGE_FUNCTIONS.get(st.session_state["page"], page_title)()
