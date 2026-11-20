@@ -13,6 +13,7 @@ from supabase import create_client, Client
 
 import ai_summary
 import company_names
+import shikiho_guide
 
 st.set_page_config(
     page_title="就活生のための企業データ分析ツール",
@@ -1230,6 +1231,7 @@ def render_data_source_notice(data: dict):
 
 def render_manual_input_form(industry: str, thresholds: dict, display_df: pd.DataFrame):
     st.warning("該当企業が見つかりません。データを直接入力してください。")
+    render_location_popover(shikiho_guide.LOCATIONS_FOR_MANUAL_INPUT)
     st.caption(
         "四季報・有報に載っていない・わからない項目は、空欄のままか「,」などの記号を入力すると"
         "「データなし」としてスキップされます（業界基準値で穴埋めせず、評価からも除外されます）。"
@@ -1545,6 +1547,7 @@ def page_reporter_comment():
         "市場全体の雰囲気（センチメント）として反映され、対象企業との相対評価が可能になります。"
     )
 
+    render_location_popover(shikiho_guide.LOCATIONS_FOR_HEADLINE, "📍 見出しは四季報のどこ？")
     headline = st.text_input("記者コメントの見出し（対象企業のもの）", value=st.session_state["reporter_headline"])
     preview = calculate_company_headline_score(headline) if headline.strip() else None
     if headline.strip() and preview is None:
@@ -1818,11 +1821,61 @@ def draw_shikiho_guide_diagram():
     return fig
 
 
+def render_location_table(items: list[str]):
+    rows = shikiho_guide.locations(items)
+    st.dataframe(
+        pd.DataFrame([{"知りたいこと": r["item"], "四季報の場所": r["where"], "書かれ方": r["how"]} for r in rows]),
+        hide_index=True, width="stretch",
+    )
+
+
+def render_location_popover(items: list[str], label: str = "📍 四季報のどこに書いてある？"):
+    """入力欄の近くに置く小さなガイド（押すと開く）。"""
+    with st.popover(label):
+        for r in shikiho_guide.locations(items):
+            st.markdown(f"**{r['item']}** → {r['where']}  \n{r['how']}")
+
+
+def render_sidebar_guide():
+    """【追加】どの画面からでも開ける四季報ミニガイド（サイドバー）。"""
+    with st.sidebar:
+        st.subheader("📖 四季報ミニガイド")
+        st.caption("知りたい情報が会社四季報のどこにあるかを確認できます。")
+        items = [x["item"] for x in shikiho_guide.SHIKIHO_LOCATIONS]
+        chosen = st.selectbox("知りたいこと", items, key="sidebar_guide_item")
+        r = shikiho_guide.locations([chosen])[0]
+        st.info(f"**{r['where']}**\n\n{r['how']}")
+        guide = next((g for g in shikiho_guide.METRIC_GUIDE if g["metric"].startswith(chosen[:4])), None)
+        if guide:
+            st.caption(f"見方：{guide['tips']}")
+
+
 def page_help():
     st.title("就活目的での四季報の読み方・指標のコツ")
-    tab_video, tab_image, tab_text, tab_dict = st.tabs(
-        ["🎥 動画で見る", "🖼️ 図解で見る", "📝 テキストで見る", "📖 見出し辞書"]
+    tab_metrics, tab_where, tab_video, tab_image, tab_text, tab_dict = st.tabs(
+        ["📊 指標の見方", "📍 四季報のどこを見る？", "🎥 動画で見る", "🖼️ 図解で見る", "📝 テキストで見る", "📖 見出し辞書"]
     )
+
+    with tab_metrics:
+        st.write("各指標が高い・低いと何が言えるか、就活でどう使うかをまとめました。"
+                 "数字に良し悪しの正解はなく、**自分が働くうえで何を大事にしたいか**と照らし合わせて見てください。")
+        for g in shikiho_guide.METRIC_GUIDE:
+            with st.expander(g["metric"]):
+                st.markdown(
+                    f"**意味**：{g['meaning']}\n\n"
+                    f"**高いと**：{g['high']}\n\n"
+                    f"**低いと**：{g['low']}\n\n"
+                    f"**就活での見方**：{g['tips']}\n\n"
+                    f"**注意**：{g['caution']}"
+                )
+        st.subheader("ツールでは点数にしていないが、見ておきたいこと")
+        for name, where, text in shikiho_guide.EXTRA_CHECKS:
+            st.markdown(f"- **{name}**（{where}）：{text}")
+
+    with tab_where:
+        st.write("このツールで使う情報が、会社四季報のどの欄に書いてあるかの一覧です。"
+                 "画面左のサイドバーの「四季報ミニガイド」からも、いつでも確認できます。")
+        render_location_table([x["item"] for x in shikiho_guide.SHIKIHO_LOCATIONS])
 
     with tab_video:
         st.info(
@@ -1998,4 +2051,5 @@ PAGE_FUNCTIONS = {
 if st.session_state["auth_user"] is None:
     page_login()
 else:
+    render_sidebar_guide()
     PAGE_FUNCTIONS.get(st.session_state["page"], page_title)()

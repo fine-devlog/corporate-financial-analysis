@@ -314,3 +314,26 @@ def test_unknown_company_goes_to_manual_input(make_app):
     at.text_input(key="company_search_input").input("存在しない架空商事").run()
     click(at, "検索")
     assert any("該当企業が見つかりません" in w.value for w in at.warning)
+
+
+def test_sidebar_guide_on_every_page(make_app):
+    at = make_app("title")
+    assert any(s.value == "📖 四季報ミニガイド" for s in at.sidebar.subheader)
+    at.sidebar.selectbox(key="sidebar_guide_item").set_value("平均年収").run()
+    assert any("【従業員】欄" in i.value for i in at.sidebar.info)
+
+
+def test_help_page_has_metric_guide(make_app):
+    at = make_app("help", prev_page="title")
+    assert not at.exception
+    texts = " ".join(m.value for m in at.markdown)
+    assert "平均年齢とセットで見る" in texts       # 指標の見方
+    assert "自己資本比率" in texts                 # 点数にしていないが見ておきたいこと
+
+
+def test_manual_input_has_location_popover(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    at.text_input(key="company_search_input").input("存在しない架空商事").run()
+    click(at, "検索")
+    texts = " ".join(m.value for m in at.markdown)
+    assert "**平均年収** → 【従業員】欄" in texts
