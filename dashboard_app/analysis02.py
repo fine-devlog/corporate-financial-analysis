@@ -1,5 +1,6 @@
 import hmac
 import random
+import re
 import unicodedata
 from datetime import datetime, timezone
 from io import BytesIO
@@ -102,7 +103,8 @@ ANALYSIS_KEYS = [
     "selected_edinet_code", "other_industry_hits",
 ]
 # 【修正】ウィジェットの入力値も残っていると、次の分析で前回の入力が表示されてしまう
-WIDGET_KEYS_TO_CLEAR = ["company_search_input", "candidate_select"] + [f"rank_{i}" for i in range(15)]
+WIDGET_KEYS_TO_CLEAR = (["company_search_input", "candidate_select", "company_table", "last_table_pick"]
+                        + [f"rank_{i}" for i in range(15)])
 
 
 def reset_analysis_state():
@@ -1385,6 +1387,35 @@ def chartable_metrics(display_df: pd.DataFrame) -> tuple[list, list]:
     return usable, skipped
 
 
+def select_company_from_table(event, display_df: pd.DataFrame, industry: str):
+    """【追加】企業データ一覧で行がクリックされたら、検索欄に入れて業界と比較する。
+
+    表の下にある検索欄・候補・グラフは、この関数のあとに描かれるので、
+    ここで値を入れておけば同じ画面更新の中で反映される。
+    """
+    try:
+        rows = list(event.selection.rows)
+    except AttributeError:
+        rows = list((event or {}).get("selection", {}).get("rows", []))
+    if not rows:
+        st.session_state.pop("last_table_pick", None)
+        return
+    position = rows[0]
+    if position >= len(display_df) or st.session_state.get("last_table_pick") == position:
+        return  # 同じ行が選ばれたままの再描画では、何もしない
+    st.session_state["last_table_pick"] = position
+    index = display_df.index[position]
+    company_row = clean_row(display_df.loc[index])
+    st.session_state["company_search_input"] = company_row["企業名"]
+    st.session_state["search_candidates"] = [index]
+    st.session_state["search_not_found"] = False
+    st.session_state["other_industry_hits"] = []
+    st.session_state["candidate_select"] = index
+    apply_comparison(company_row["企業名"], company_row, industry)
+    st.session_state["skip_save"] = False
+    st.toast(f"「{company_row['企業名']}」を選びました。下の比較結果とグラフで確認できます。")
+
+
 def render_metric_chart(display_df: pd.DataFrame, thresholds: dict):
     st.subheader("指標比較グラフ")
     usable, skipped = chartable_metrics(display_df)
@@ -1409,32 +1440,61 @@ def render_metric_chart(display_df: pd.DataFrame, thresholds: dict):
     shown = plot_df.head(top_n)
     if selected and selected not in set(shown["企業名"]):
         shown = pd.concat([shown, plot_df[plot_df["企業名"] == selected]])
-    shown = shown.assign(区分=["選択中の企業" if n == selected else "その他" for n in shown["企業名"]])
+    shown = shown.assign(
+        区分=["選択中の企業" if n == selected else "その他" for n in shown["企業名"]],
+        表示名=short_company_labels(shown["企業名"]),
+    )
     st.caption(f"{len(plot_df)}社中、上位{min(top_n, len(plot_df))}社" + ("＋選択中の企業" if selected else "") + "を表示")
 
-    bars = (
-        alt.Chart(shown)
-        .mark_bar()
-        .encode(
-            x=alt.X("企業名:N", sort=shown["企業名"].tolist(), title="企業名", axis=alt.Axis(labelAngle=-60)),
-            y=alt.Y(f"{metric_to_plot}:Q", title=metric_to_plot),
-            color=alt.Color(
-                "区分:N",
-                scale=alt.Scale(domain=["選択中の企業", "その他"], range=["#d62728", "#4C72B0"]),
-                legend=alt.Legend(title=None),
-            ),
-            tooltip=["企業名", f"{metric_to_plot}:Q"],
-        )
+    st.altair_chart(build_metric_chart(shown, metric_to_plot, thresholds.get(metric_to_plot), is_mobile_device()),
+                    width="stretch")
+
+
+def short_company_labels(names: pd.Series) -> list:
+    """グラフの軸用に「株式会社」などを省いた短い社名（重なる場合は正式名のまま）。"""
+    # 「株式会社」を除き、空白は1つにまとめる（U-NEXT HOLDINGS の空白は残す）
+    short = [re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(n)).replace("株式会社", "")).strip() or str(n)
+             for n in names]
+    return [s if short.count(s) == 1 else full for s, full in zip(short, names)]
+
+
+BAR_HEIGHT_PX = 26  # スマホの横棒グラフで1社あたりの高さ
+
+
+def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool) -> alt.LayerChart:
+    """指標比較グラフ。パソコンは縦棒、スマホは画面幅いっぱいの横棒（社名が読めるように）。"""
+    order = shown["表示名"].tolist()
+    color = alt.Color(
+        "区分:N",
+        scale=alt.Scale(domain=["選択中の企業", "その他"], range=["#d62728", "#4C72B0"]),
+        legend=alt.Legend(title=None, orient="top"),
     )
+    tooltip = [alt.Tooltip("企業名:N"), alt.Tooltip(f"{metric}:Q")]
+    if mobile:
+        # 【追加】スマホは画面が縦長なので横棒にし、社名を縦に並べる
+        bars = alt.Chart(shown).mark_bar().encode(
+            y=alt.Y("表示名:N", sort=order, title=None, axis=alt.Axis(labelLimit=150)),
+            x=alt.X(f"{metric}:Q", title=metric),
+            color=color, tooltip=tooltip,
+        )
+        rule_encoding = {"x": "業界中央値:Q"}
+        height = max(240, BAR_HEIGHT_PX * len(shown))
+    else:
+        bars = alt.Chart(shown).mark_bar().encode(
+            x=alt.X("表示名:N", sort=order, title="企業名", axis=alt.Axis(labelAngle=-60)),
+            y=alt.Y(f"{metric}:Q", title=metric),
+            color=color, tooltip=tooltip,
+        )
+        rule_encoding = {"y": "業界中央値:Q"}
+        height = 400
     layers = [bars]
-    baseline = thresholds.get(metric_to_plot)
     if baseline is not None:
         layers.append(
             alt.Chart(pd.DataFrame({"業界中央値": [baseline]}))
             .mark_rule(strokeDash=[6, 4], color="gray")
-            .encode(y="業界中央値:Q", tooltip=["業界中央値:Q"])
+            .encode(tooltip=["業界中央値:Q"], **rule_encoding)
         )
-    st.altair_chart(alt.layer(*layers), width="stretch")
+    return alt.layer(*layers).properties(height=height)
 
 
 def page_company_data():
@@ -1473,7 +1533,10 @@ def page_company_data():
     table_df["出典"] = table_df["出典"].map(lambda s: SOURCE_LABELS.get(s, s))
     table_df = table_df.drop(columns=HIDDEN_COLUMNS)
     table_df = table_df.dropna(axis=1, how="all")  # 全社「データなし」の列は表示しない
-    st.dataframe(table_df, width="stretch", hide_index=True)
+    st.caption("👆 行をクリックすると、その企業を業界と比較し、グラフで赤く表示します。")
+    event = st.dataframe(table_df, width="stretch", hide_index=True,
+                         key="company_table", on_select="rerun", selection_mode="single-row")
+    select_company_from_table(event, display_df, industry)
 
     with st.expander("🔍 企業を検索する", expanded=True):
         query = st.text_input(

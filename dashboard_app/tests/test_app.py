@@ -359,3 +359,49 @@ def test_guide_as_button_on_mobile(make_app, monkeypatch):
     assert "popover_guide_item" in _guide_keys(at)
     assert "sidebar_guide_item" not in _guide_keys(at)
     assert not at.sidebar.subheader
+
+
+def _vega_specs(at):
+    import json
+
+    found = []
+
+    def walk(node):
+        children = getattr(node, "children", None)
+        for ch in (children.values() if isinstance(children, dict) else children or []):
+            proto = getattr(ch, "proto", None)
+            if proto is not None and hasattr(proto, "spec") and getattr(ch, "type", "") == "vega_lite_chart":
+                found.append(json.loads(proto.spec))
+            walk(ch)
+
+    walk(at._tree)
+    return found
+
+
+def test_chart_is_vertical_on_pc(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    bars = _vega_specs(at)[0]["layer"][0]["encoding"]
+    assert bars["x"]["field"] == "表示名" and bars["y"]["type"] == "quantitative"
+    assert "トヨタ自動車" in bars["x"]["sort"]          # 「株式会社」を省いた短い社名
+
+
+def test_chart_is_horizontal_on_mobile(make_app, monkeypatch):
+    import shikiho_guide
+    monkeypatch.setattr(shikiho_guide, "is_mobile_user_agent", lambda ua: True)
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    spec = _vega_specs(at)[0]
+    bars = spec["layer"][0]["encoding"]
+    assert bars["y"]["field"] == "表示名" and bars["x"]["type"] == "quantitative"
+    assert spec["height"] >= 240  # 社数に応じて縦に伸びる
+
+
+def test_clicking_table_row_selects_company(make_app):
+    """企業データ一覧の行をクリック → 検索欄に入り、比較され、グラフで赤くなる。"""
+    at = make_app("company_data", selected_industry="9.輸送用機器",
+                  company_table={"selection": {"rows": [1], "columns": []}})
+    assert not at.exception
+    assert at.session_state["company_search_input"] == "本田技研工業株式会社"
+    assert at.session_state["selected_company"] == "本田技研工業株式会社"
+    assert at.session_state["comparison_result"]
+    bars = _vega_specs(at)[0]["layer"][0]
+    assert "本田技研工業" in bars["encoding"]["x"]["sort"]
