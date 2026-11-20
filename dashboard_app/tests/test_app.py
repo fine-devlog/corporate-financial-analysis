@@ -395,10 +395,11 @@ def test_chart_is_horizontal_on_mobile(make_app, monkeypatch):
     assert spec["height"] >= 240  # 社数に応じて縦に伸びる
 
 
-def test_clicking_table_row_selects_company(make_app):
-    """企業データ一覧の行をクリック → 検索欄に入り、比較され、グラフで赤くなる。"""
+@pytest.mark.parametrize("column", ["企業名", "平均年収（万）", "決算期"])
+def test_clicking_any_cell_selects_company(make_app, column):
+    """企業データ一覧の行のどのセルをクリックしても → 検索欄に入り、比較され、グラフで赤くなる。"""
     at = make_app("company_data", selected_industry="9.輸送用機器",
-                  company_table={"selection": {"rows": [1], "columns": []}})
+                  company_table={"selection": {"rows": [], "columns": [], "cells": [(1, column)]}})
     assert not at.exception
     assert at.session_state["company_search_input"] == "本田技研工業株式会社"
     assert at.session_state["selected_company"] == "本田技研工業株式会社"

@@ -1394,9 +1394,11 @@ def select_company_from_table(event, display_df: pd.DataFrame, industry: str):
     ここで値を入れておけば同じ画面更新の中で反映される。
     """
     try:
-        rows = list(event.selection.rows)
-    except AttributeError:
-        rows = list((event or {}).get("selection", {}).get("rows", []))
+        selection = dict(event.selection)
+    except (AttributeError, TypeError):
+        selection = dict((event or {}).get("selection", {}))
+    # クリックされたセル（行の位置, 列名）から行を取り出す。行の位置は、表を並べ替えても元の順番のまま
+    rows = [cell[0] for cell in selection.get("cells", [])] or list(selection.get("rows", []))
     if not rows:
         st.session_state.pop("last_table_pick", None)
         return
@@ -1533,9 +1535,11 @@ def page_company_data():
     table_df["出典"] = table_df["出典"].map(lambda s: SOURCE_LABELS.get(s, s))
     table_df = table_df.drop(columns=HIDDEN_COLUMNS)
     table_df = table_df.dropna(axis=1, how="all")  # 全社「データなし」の列は表示しない
-    st.caption("👆 行をクリックすると、その企業を業界と比較し、グラフで赤く表示します。")
+    st.caption("👆 企業の行のどこか（企業名でも数値でも）をクリックすると、その企業を業界と比較し、グラフで赤く表示します。")
+    # 【修正】"single-row" は行頭のチェック欄を押す方式で分かりにくいため、
+    #   どのセルをクリックしてもその行を選んだことにする "single-cell" にした
     event = st.dataframe(table_df, width="stretch", hide_index=True,
-                         key="company_table", on_select="rerun", selection_mode="single-row")
+                         key="company_table", on_select="rerun", selection_mode="single-cell")
     select_company_from_table(event, display_df, industry)
 
     with st.expander("🔍 企業を検索する", expanded=True):
