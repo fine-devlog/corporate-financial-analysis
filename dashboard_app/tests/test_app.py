@@ -339,8 +339,23 @@ def test_manual_input_has_location_popover(make_app):
     assert "**平均年収** → 【従業員】欄" in texts
 
 
-def test_guide_button_in_main_area_for_mobile(make_app):
-    """スマホでは折りたたまれるサイドバーとは別に、画面本体からもガイドを開ける。"""
+def _guide_keys(at):
+    return {s.key for s in at.selectbox}
+
+
+def test_guide_in_sidebar_on_pc(make_app):
+    """パソコン：サイドバーにガイド。画面上部のボタンは出さない。"""
     at = make_app("company_data", selected_industry="9.輸送用機器")
-    assert at.selectbox(key="popover_guide_item") is not None
-    assert at.selectbox(key="sidebar_guide_item") is not None
+    assert "sidebar_guide_item" in _guide_keys(at)
+    assert "popover_guide_item" not in _guide_keys(at)
+
+
+def test_guide_as_button_on_mobile(make_app, monkeypatch):
+    """スマホ：サイドバーは使わず、画面上部のボタン（小窓）からガイドを開く。"""
+    import shikiho_guide
+    monkeypatch.setattr(shikiho_guide, "is_mobile_user_agent", lambda ua: True)
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    assert not at.exception
+    assert "popover_guide_item" in _guide_keys(at)
+    assert "sidebar_guide_item" not in _guide_keys(at)
+    assert not at.sidebar.subheader

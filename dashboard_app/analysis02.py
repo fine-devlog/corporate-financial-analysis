@@ -18,7 +18,9 @@ import shikiho_guide
 st.set_page_config(
     page_title="就活生のための企業データ分析ツール",
     layout="wide",
-    initial_sidebar_state="expanded",
+    # 【修正】"expanded" だとスマホでもサイドバーが開いた状態で画面をふさぐ。
+    #   "auto" はパソコンでは開き、スマホなど狭い画面では閉じた状態で始まる
+    initial_sidebar_state="auto",
 )
 
 # matplotlib の日本語フォント（入っているものを順に使う。無ければ豆腐になる）
@@ -1846,20 +1848,31 @@ def _render_guide_body(key: str):
         st.caption(f"見方：{guide['tips']}")
 
 
+def is_mobile_device() -> bool:
+    """ブラウザの User-Agent からスマホかどうかを判定する（分からなければパソコン扱い）。"""
+    try:
+        user_agent = st.context.headers.get("User-Agent", "") or ""
+    except Exception:
+        user_agent = ""
+    return shikiho_guide.is_mobile_user_agent(user_agent)
+
+
 def render_sidebar_guide():
     """【追加】どの画面からでも開ける四季報ミニガイド。
 
-    パソコンではサイドバーに常に表示する。スマホではサイドバーが左上の小さな矢印に
-    折りたたまれて気づかれにくいため、画面の上部にも同じガイドを開くボタンを置く。
+    パソコン：サイドバーに常に表示（画面が広いので邪魔にならない）。
+    スマホ  ：サイドバーは圧迫感があるので使わず、画面右上のボタンから小窓で開く。
     """
+    if is_mobile_device():
+        _, right = st.columns([3, 1])
+        with right:
+            with st.popover("📖 四季報ミニガイド", width="stretch"):
+                _render_guide_body("popover_guide_item")
+        return
     with st.sidebar:
         st.subheader("📖 四季報ミニガイド")
         st.caption("知りたい情報が会社四季報のどこにあるかを確認できます。")
         _render_guide_body("sidebar_guide_item")
-    _, right = st.columns([3, 1])
-    with right:
-        with st.popover("📖 四季報ミニガイド", width="stretch"):
-            _render_guide_body("popover_guide_item")
 
 
 def page_help():

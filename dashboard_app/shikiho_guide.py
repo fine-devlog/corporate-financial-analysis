@@ -3,6 +3,7 @@
 欄の名前と書かれ方は、証券会社の「会社四季報の見方」解説で確認した内容にもとづく
 （例：auカブコム証券 https://kabu.com/investment/market/quarterly/guide.html ）。
 """
+import re
 
 # --------------------------------------------------------------------------
 # 必要な情報が会社四季報のどこに書いてあるか
@@ -81,6 +82,11 @@ LOCATIONS_FOR_MANUAL_INPUT = [
     "売上高成長率・営業利益成長率", "平均勤続年数", "来期成長率予想", "営業CFマージン", "主力セグメント利益集中度",
 ]
 LOCATIONS_FOR_HEADLINE = ["記者コメントの見出し"]
+
+
+def is_mobile_user_agent(user_agent: str) -> bool:
+    """スマホのブラウザか。iPad は最近の Safari がパソコンと同じ表記を使うので、パソコン扱いになる。"""
+    return bool(re.search(r"iPhone|iPod|Android.*Mobile|Mobile.*Safari|Windows Phone", user_agent or ""))
 
 
 def locations(items: list[str]) -> list[dict]:
