@@ -1836,18 +1836,30 @@ def render_location_popover(items: list[str], label: str = "📍 四季報のど
             st.markdown(f"**{r['item']}** → {r['where']}  \n{r['how']}")
 
 
+def _render_guide_body(key: str):
+    items = [x["item"] for x in shikiho_guide.SHIKIHO_LOCATIONS]
+    chosen = st.selectbox("知りたいこと", items, key=key)
+    r = shikiho_guide.locations([chosen])[0]
+    st.info(f"**{r['where']}**\n\n{r['how']}")
+    guide = next((g for g in shikiho_guide.METRIC_GUIDE if g["metric"].startswith(chosen[:4])), None)
+    if guide:
+        st.caption(f"見方：{guide['tips']}")
+
+
 def render_sidebar_guide():
-    """【追加】どの画面からでも開ける四季報ミニガイド（サイドバー）。"""
+    """【追加】どの画面からでも開ける四季報ミニガイド。
+
+    パソコンではサイドバーに常に表示する。スマホではサイドバーが左上の小さな矢印に
+    折りたたまれて気づかれにくいため、画面の上部にも同じガイドを開くボタンを置く。
+    """
     with st.sidebar:
         st.subheader("📖 四季報ミニガイド")
         st.caption("知りたい情報が会社四季報のどこにあるかを確認できます。")
-        items = [x["item"] for x in shikiho_guide.SHIKIHO_LOCATIONS]
-        chosen = st.selectbox("知りたいこと", items, key="sidebar_guide_item")
-        r = shikiho_guide.locations([chosen])[0]
-        st.info(f"**{r['where']}**\n\n{r['how']}")
-        guide = next((g for g in shikiho_guide.METRIC_GUIDE if g["metric"].startswith(chosen[:4])), None)
-        if guide:
-            st.caption(f"見方：{guide['tips']}")
+        _render_guide_body("sidebar_guide_item")
+    _, right = st.columns([3, 1])
+    with right:
+        with st.popover("📖 四季報ミニガイド", width="stretch"):
+            _render_guide_body("popover_guide_item")
 
 
 def page_help():

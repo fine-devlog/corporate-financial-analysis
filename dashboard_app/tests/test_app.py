@@ -337,3 +337,10 @@ def test_manual_input_has_location_popover(make_app):
     click(at, "検索")
     texts = " ".join(m.value for m in at.markdown)
     assert "**平均年収** → 【従業員】欄" in texts
+
+
+def test_guide_button_in_main_area_for_mobile(make_app):
+    """スマホでは折りたたまれるサイドバーとは別に、画面本体からもガイドを開ける。"""
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    assert at.selectbox(key="popover_guide_item") is not None
+    assert at.selectbox(key="sidebar_guide_item") is not None
