@@ -15,6 +15,7 @@ services:
 
   # EDINET の取り込みスクリプト（必要なときだけ1回動かして終わる箱）
   ingest:
+    build: .                     # イメージが無ければ作る（無いとネット上のDocker Hubを探しに行って失敗する）
     image: shikiho-tool:latest   # app と同じイメージを使い回す
     profiles: ["tools"]          # `docker compose up` では起動しない（run で呼んだときだけ）
     env_file: .env               # キーは環境変数として起動時に渡す
