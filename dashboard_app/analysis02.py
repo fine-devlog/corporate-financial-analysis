@@ -1040,6 +1040,15 @@ def get_user_role(user) -> str:
         return "user"
 
 
+VIEWER_ROLE = "viewer"  # 閲覧専用アカウント（お試し用）。DBには何も書かない
+VIEWER_NOTICE = "👀 閲覧専用アカウントでログイン中です。入力したデータや評価結果は保存されません。"
+
+
+def is_viewer() -> bool:
+    user = st.session_state.get("auth_user")
+    return user is not None and get_user_role(user) == VIEWER_ROLE
+
+
 BASELINE_HEADLINE = [
     ("平均年収（万）", "平均年収", "万円"),
     ("平均年齢（歳）", "平均年齢", "歳"),
@@ -1140,6 +1149,8 @@ def page_title():
     st.write("有価証券報告書（EDINET）の実データと、四季報の見出し語から企業の傾向を多角的に分析します。")
     user = st.session_state["auth_user"]
     st.caption(f"ログイン中：{user.email}")
+    if is_viewer():
+        st.info(VIEWER_NOTICE)
     col1, col2 = st.columns([3, 1])
     with col1:
         if st.button("始める", type="primary"):
@@ -1342,7 +1353,9 @@ def render_manual_input_form(industry: str, thresholds: dict, display_df: pd.Dat
         st.session_state["search_not_found"] = False
 
         existing_names = set(display_df["企業名"].map(normalize_company_name))
-        if is_extreme_outlier:
+        if is_viewer():
+            st.success(f"「{my_company}」のデータを比較しました（閲覧専用アカウントのため、データベースには登録しません）")
+        elif is_extreme_outlier:
             st.success(f"「{my_company}」のデータを比較しました（異常値のため企業データベースには登録しません）")
         elif normalize_company_name(my_company) in existing_names:
             # 同名企業は重複登録しない
@@ -1374,6 +1387,7 @@ def render_manual_input_form(industry: str, thresholds: dict, display_df: pd.Dat
                 st.info(SCHEMA_HINT)
 
 
+MOBILE_TABLE_HEIGHT = 213  # 見出し＋5行分（1行35px）
 MIN_CHART_COVERAGE = 0.2  # 業界の2割以上の企業に値がある指標だけをグラフの選択肢に出す
 
 
@@ -1601,8 +1615,11 @@ def page_company_data():
     select_company_from_chart(st.session_state.get("metric_chart"), display_df, industry)
     # 【修正】"single-row" は行頭のチェック欄を押す方式で分かりにくいため、
     #   どのセルをクリックしてもその行を選んだことにする "single-cell" にした
+    # スマホでは表が画面の大半を占め、表の中とページのスクロールが取り合いになるので、
+    # 高さをパソコンの標準（10行分）の約半分にする
     st.dataframe(style_company_table(table_df, st.session_state.get("selected_company")),
                  width="stretch", hide_index=True,
+                 height=MOBILE_TABLE_HEIGHT if is_mobile_device() else "auto",
                  key="company_table", on_select="rerun", selection_mode="single-cell")
 
     st.html(f'<div id="{SEARCH_ANCHOR_ID}"></div>')
@@ -1914,7 +1931,10 @@ def page_result():
 
     render_ai_summary_section(company)
 
-    if st.session_state.get("skip_save"):
+    viewer = is_viewer()
+    if viewer:
+        st.info(VIEWER_NOTICE)
+    elif st.session_state.get("skip_save"):
         st.error("入力値が異常値と判定されたため、この結果はデータベースに保存されません。")
 
     col1, col2 = st.columns(2)
@@ -1922,8 +1942,8 @@ def page_result():
         if st.button("❓ ヘルプ"):
             goto("help")
     with col2:
-        if st.button("終了する（保存してリセット）", type="primary"):
-            if not st.session_state.get("skip_save"):
+        if st.button("終了する（リセット）" if viewer else "終了する（保存してリセット）", type="primary"):
+            if not viewer and not st.session_state.get("skip_save"):
                 # 保存失敗でアプリが落ちないようにする
                 try:
                     get_supabase().table("results").insert({

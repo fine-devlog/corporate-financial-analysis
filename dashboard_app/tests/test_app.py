@@ -8,6 +8,8 @@ from streamlit.testing.v1 import AppTest
 
 APP = str(Path(__file__).resolve().parent.parent / "analysis02.py")
 USER = types.SimpleNamespace(email="test@example.com", app_metadata={})
+VIEWER = types.SimpleNamespace(email="viewer@example.com", app_metadata={"role": "viewer"})
+INSERTS = []  # FakeQuery.insert で書き込まれた (テーブル名, 中身)
 
 
 def edinet_row(i, name, code, income, margin, growth):
@@ -51,6 +53,10 @@ class FakeQuery:
 
     def __getattr__(self, _):
         return lambda *a, **k: self
+
+    def insert(self, payload):
+        INSERTS.append((self.table, payload))
+        return self
 
     def range(self, a, b):
         self.rng = (a, b)
@@ -97,8 +103,10 @@ def fake_name_table(monkeypatch):
 
 @pytest.fixture
 def make_app(monkeypatch):
-    def _make(page, db_fail=False, secrets=None, **state):
+    def _make(page, db_fail=False, secrets=None, user=USER, **state):
         import supabase
+
+        INSERTS.clear()
 
         monkeypatch.setattr(supabase, "create_client",
                             lambda *a, **k: types.SimpleNamespace(table=lambda n: FakeQuery(n, db_fail)))
@@ -107,7 +115,7 @@ def make_app(monkeypatch):
         at.secrets["SUPABASE_KEY"] = "sb_publishable_test"
         for k, v in (secrets or {}).items():
             at.secrets[k] = v
-        at.session_state["auth_user"] = USER
+        at.session_state["auth_user"] = user
         at.session_state["page"] = page
         for k, v in state.items():
             at.session_state[k] = v
@@ -461,3 +469,54 @@ def test_smooth_scroll_helpers_installed(make_app):
     html = " ".join(_html_bodies(at))
     assert "shikihoSmoothScrollTo" in html and "requestAnimationFrame" in html
     assert "prefers-reduced-motion" in html
+
+
+RESULT_STATE = dict(selected_industry="9.輸送用機器", selected_company="トヨタ自動車株式会社",
+                    selected_edinet_code="E00001")
+
+
+def test_normal_user_saves_result(make_app):
+    at = make_app("result", **RESULT_STATE)
+    click(at, "終了する（保存してリセット）")
+    assert not at.exception
+    assert [t for t, _ in INSERTS] == ["results"]
+
+
+def test_viewer_does_not_save_result(make_app):
+    """閲覧専用アカウント：結果を保存しない（ボタン名も変わり、案内が出る）"""
+    at = make_app("result", user=VIEWER, **RESULT_STATE)
+    assert any("閲覧専用アカウント" in i.value for i in at.info)
+    assert not any(b.label == "終了する（保存してリセット）" for b in at.button)
+    click(at, "終了する（リセット）")
+    assert not at.exception
+    assert INSERTS == []
+    assert at.session_state["page"] == "title"
+
+
+def test_viewer_notice_on_title(make_app):
+    at = make_app("title", user=VIEWER)
+    assert any("閲覧専用アカウント" in i.value for i in at.info)
+    assert not any("管理者ページ" in b.label for b in at.button)
+
+
+def _table_heights(make_app, monkeypatch):
+    """企業データ一覧（key=company_table）を描いたときの height 引数を記録する"""
+    import streamlit as st
+
+    heights, original = [], st.dataframe
+
+    def spy(*args, **kwargs):
+        if kwargs.get("key") == "company_table":
+            heights.append(kwargs.get("height"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(st, "dataframe", spy)
+    make_app("company_data", selected_industry="9.輸送用機器")
+    return heights
+
+
+def test_company_table_is_shorter_on_mobile(make_app, monkeypatch):
+    import shikiho_guide
+    assert _table_heights(make_app, monkeypatch) == ["auto"]
+    monkeypatch.setattr(shikiho_guide, "is_mobile_user_agent", lambda ua: True)
+    assert _table_heights(make_app, monkeypatch)[-1] == 213

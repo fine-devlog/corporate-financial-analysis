@@ -56,12 +56,13 @@ drop policy if exists "companies_select_authenticated" on companies;
 create policy "companies_select_authenticated" on companies
   for select to authenticated using (true);
 
--- ログイン済みユーザーは「自分の手入力データ」だけ追加できる
+-- ログイン済みユーザーは「自分の手入力データ」だけ追加できる（閲覧専用 role='viewer' は不可）
 -- （EDINETデータの偽装・上書きは不可。EDINETデータは service_role キーの取り込みスクリプトのみが書く）
 drop policy if exists "companies_insert_own_user_rows" on companies;
 create policy "companies_insert_own_user_rows" on companies
   for insert to authenticated
-  with check (source = 'user' and edinet_code is null and created_by = auth.uid());
+  with check (source = 'user' and edinet_code is null and created_by = auth.uid()
+              and coalesce(auth.jwt() -> 'app_metadata' ->> 'role', '') <> 'viewer');
 
 -- ===========================================================================
 -- company_texts: 有報の文章（AI要約の入力）。書き込みは取り込みスクリプト(service_role)のみ
@@ -99,9 +100,11 @@ alter table results
 
 alter table results enable row level security;
 
+-- 自分の結果だけ保存できる（閲覧専用 role='viewer' は保存不可）
 drop policy if exists "results_insert_own" on results;
 create policy "results_insert_own" on results
-  for insert to authenticated with check (user_id = auth.uid());
+  for insert to authenticated
+  with check (user_id = auth.uid() and coalesce(auth.jwt() -> 'app_metadata' ->> 'role', '') <> 'viewer');
 
 -- 自分の結果は読める。管理者（app_metadata.role = 'admin'）は全件読める
 drop policy if exists "results_select_own_or_admin" on results;
@@ -135,3 +138,9 @@ grant usage, select on all sequences in schema public to authenticated, service_
 -- update auth.users
 --   set raw_app_meta_data = raw_app_meta_data || '{"role": "admin"}'
 --   where email = 'you@example.com';
+
+-- 閲覧専用アカウント（お試し用）：app_metadata.role = 'viewer' にすると、
+-- アプリでも DB（上の RLS）でも、手入力データと評価結果を保存できなくなる
+-- update auth.users
+--   set raw_app_meta_data = raw_app_meta_data || '{"role": "viewer"}'
+--   where email = 'viewer@example.com';
