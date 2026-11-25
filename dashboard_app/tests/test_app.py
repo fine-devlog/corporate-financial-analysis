@@ -198,7 +198,7 @@ def test_login_email_not_confirmed(monkeypatch):
     assert any("確認が済んでいません" in e.value for e in at.error)
 
 
-@pytest.mark.parametrize("page", ["title", "disclaimer", "industry_select", "help"])
+@pytest.mark.parametrize("page", ["title", "disclaimer", "view_mode", "industry_select", "help"])
 def test_simple_pages_render(make_app, page):
     assert not make_app(page).exception
 
@@ -520,3 +520,46 @@ def test_company_table_is_shorter_on_mobile(make_app, monkeypatch):
     assert _table_heights(make_app, monkeypatch) == ["auto"]
     monkeypatch.setattr(shikiho_guide, "is_mobile_user_agent", lambda ua: True)
     assert _table_heights(make_app, monkeypatch)[-1] == 213
+
+
+def test_disclaimer_goes_to_view_mode(make_app):
+    at = make_app("disclaimer")
+    click(at, "理解した")
+    assert at.session_state["page"] == "view_mode"
+
+
+def test_view_mode_by_industry(make_app):
+    at = make_app("view_mode")
+    at.button(key="view_mode_by_industry").click().run()
+    assert at.session_state["page"] == "industry_select"
+
+
+def test_view_mode_all_industries(make_app):
+    at = make_app("view_mode")
+    at.button(key="view_mode_all").click().run()
+    assert not at.exception
+    assert at.session_state["page"] == "company_data"
+    assert at.session_state["selected_industry"] == "全業界"
+    assert any("【全業界】" in t.value for t in at.title)
+    table = at.dataframe[0].value
+    # 業界を問わず全社（EDINET 7社＋手入力1社）が1回ずつ並び、区分には各社の業界が出る
+    assert len(table) == 8 and table["企業名"].is_unique
+    assert "2.IT・ソフト・SI" in set(table["区分"])
+    assert any(c.value.startswith("全業界の中央値：") for c in at.caption)
+
+
+def test_all_industries_search_and_compare(make_app):
+    at = make_app("company_data", selected_industry="全業界")
+    at.text_input(key="company_search_input").input("NRI").run()
+    click(at, "検索")
+    click(at, "この企業を業界と比較する")
+    assert not at.exception
+    assert at.session_state["selected_company"] == "株式会社野村総合研究所"
+
+
+def test_all_industries_falls_back_to_all_samples(make_app):
+    import streamlit as st
+    st.cache_data.clear()  # ほかのテストで読み込んだ「全業界」のデータが残らないように
+    at = make_app("company_data", db_fail=True, selected_industry="全業界")
+    assert not at.exception
+    assert len(at.dataframe[0].value) == 80  # 16業界×5社のサンプル

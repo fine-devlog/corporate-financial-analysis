@@ -131,6 +131,19 @@ INDUSTRIES = [
     "13.金融", "14.建設・不動産", "15.小売", "16.サービス・運輸・レジャー",
 ]
 
+ALL_INDUSTRIES = "全業界"  # 業界を問わず、全上場企業をまとめて見るときの「業界」
+
+
+def industry_label(industry: str) -> str:
+    """画面に出す業界名（「通信業界」/「全業界」）。"""
+    return ALL_INDUSTRIES if industry == ALL_INDUSTRIES else f"{industry}業界"
+
+
+def baseline_wording(text: str, industry: str) -> str:
+    """全業界で見ているときは「業界中央値」を「全業界の中央値」と表示する。"""
+    return text.replace("業界中央値", "全業界の中央値") if industry == ALL_INDUSTRIES else text
+
+
 METRIC_COLUMNS = [
     "平均年収（万）", "平均年齢（歳）", "海外売上比率（％）",
     "営業利益率（％）", "売上高成長率（％）", "営業利益成長率（％）",
@@ -300,7 +313,8 @@ def _fetch_pages(client: Client, industry: str, multi_industry: bool) -> list:
     while True:
         query = client.table("companies").select(DB_SELECT if multi_industry else DB_SELECT_LEGACY)
         # 【追加】売上の3割以上を占める事業がある企業は、複数の業界（industries 列）に表示する
-        query = query.contains("industries", [industry]) if multi_industry else query.eq("industry", industry)
+        if industry != ALL_INDUSTRIES:  # 全業界のときは絞り込まない
+            query = query.contains("industries", [industry]) if multi_industry else query.eq("industry", industry)
         batch = query.order("id").range(start, start + PAGE_SIZE - 1).execute().data
         rows.extend(batch)
         if len(batch) < PAGE_SIZE:
@@ -345,9 +359,10 @@ def get_industry_data(industry: str) -> dict:
 
     if not edinet_df.empty:
         stats_df, kind = edinet_df, "edinet"
-    elif industry in COMPANY_DATA_BY_INDUSTRY:
-        stats_df = pd.DataFrame(COMPANY_DATA_BY_INDUSTRY[industry]).assign(出典="sample")
-        stats_df = stats_df.reindex(columns=DISPLAY_COLUMNS)
+    elif industry in COMPANY_DATA_BY_INDUSTRY or industry == ALL_INDUSTRIES:
+        samples = COMPANY_DATA_BY_INDUSTRY if industry == ALL_INDUSTRIES else {industry: COMPANY_DATA_BY_INDUSTRY[industry]}
+        stats_df = pd.concat([pd.DataFrame(d).assign(出典="sample", 主業種=name) for name, d in samples.items()],
+                             ignore_index=True).reindex(columns=DISPLAY_COLUMNS)
         kind = "sample"
     else:
         stats_df, kind = pd.DataFrame(columns=DISPLAY_COLUMNS), "none"
@@ -360,8 +375,11 @@ def get_industry_data(industry: str) -> dict:
 
 
 def listing_reason(row, industry: str) -> str:
-    """この業界に表示されている理由（主業種か、売上の3割以上を占める兼業か）。"""
+    """この業界に表示されている理由（主業種か、売上の3割以上を占める兼業か）。
+    全業界のときは、その企業の業界名を返す。"""
     main = row.get("主業種")
+    if industry == ALL_INDUSTRIES:
+        return "不明" if is_missing(main) else main
     if is_missing(main) or main == industry:
         return "主業種"
     shares = row.get("業界別売上比率")
@@ -1202,13 +1220,41 @@ AIによる要約は、事実と異なる内容や重要な情報の抜け落ち
         """)
     st.write("---")
     if st.button("理解した"):
-        goto("industry_select")
+        goto("view_mode")
     else:
         st.write("「理解した」ボタンを押してください。")
 
 
+VIEW_MODES = {
+    "by_industry": ("🏭 業界ごとに見る",
+                    "同じ業界の企業だけを並べ、業界の中央値と比べます。志望業界が決まっているときに。"),
+    "all": ("🌐 全業界まとめて見る",
+            "業界を問わず全上場企業を並べ、全体の中央値と比べます。業界を決める前の比較や、"
+            "社名から探したいときに。業界ごとに水準が違うので、評価は目安として見てください。"),
+}
+
+
+def page_view_mode():
+    """【追加】業界選択の前に、業界ごとに見るか、全業界まとめて見るかを選ぶ。"""
+    st.title("見方を選んでください")
+    current = "all" if st.session_state.get("selected_industry") == ALL_INDUSTRIES else None
+    for mode, (title, description) in VIEW_MODES.items():
+        with st.container(border=True):
+            st.subheader(title)
+            st.write(description)
+            if st.button("こちらで見る", key=f"view_mode_{mode}", type="primary" if mode == current else "secondary"):
+                if mode == "by_industry":
+                    goto("industry_select")
+                if st.session_state.get("selected_industry") != ALL_INDUSTRIES:
+                    reset_analysis_state()
+                st.session_state["selected_industry"] = ALL_INDUSTRIES
+                goto("company_data")
+
+
 def page_industry_select():
     st.title("業界を選択してください")
+    if st.button("← 見方の選択に戻る"):
+        goto("view_mode")
     current = st.session_state.get("selected_industry")
     index = INDUSTRIES.index(current) if current in INDUSTRIES else None
     industry = st.selectbox("業界", INDUSTRIES, index=index, placeholder="選択してください")
@@ -1355,6 +1401,9 @@ def render_manual_input_form(industry: str, thresholds: dict, display_df: pd.Dat
         existing_names = set(display_df["企業名"].map(normalize_company_name))
         if is_viewer():
             st.success(f"「{my_company}」のデータを比較しました（閲覧専用アカウントのため、データベースには登録しません）")
+        elif industry == ALL_INDUSTRIES:
+            # 業界が分からない手入力データを「全業界」という業界で登録しないようにする
+            st.success(f"「{my_company}」のデータを比較しました（全業界で見ているときは、データベースには登録しません）")
         elif is_extreme_outlier:
             st.success(f"「{my_company}」のデータを比較しました（異常値のため企業データベースには登録しません）")
         elif normalize_company_name(my_company) in existing_names:
@@ -1574,7 +1623,10 @@ def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool)
 
 def page_company_data():
     industry = st.session_state["selected_industry"]
-    st.title(f"【{industry}業界】企業データ")
+    all_mode = industry == ALL_INDUSTRIES
+    st.title(f"【{industry_label(industry)}】企業データ")
+    if all_mode:
+        st.caption("全上場企業をまとめて表示しています。「区分」の列は各企業の業界、基準値は全業界の中央値です。")
 
     data = get_industry_data(industry)
     display_df = data["display"]
@@ -1582,7 +1634,7 @@ def page_company_data():
     if display_df.empty:
         st.warning("この業界のデータはまだ準備中です。他の業界をお試しください。")
         if st.button("業界選択に戻る"):
-            goto("industry_select")
+            goto("view_mode" if all_mode else "industry_select")
         return
 
     thresholds = calculate_industry_threshold(industry)
@@ -1591,7 +1643,7 @@ def page_company_data():
     headline = [(label, thresholds.get(metric), unit) for metric, label, unit in BASELINE_HEADLINE
                 if thresholds.get(metric) is not None]
     if headline:
-        st.caption("業界中央値：" + "　/　".join(f"{label} {value}{unit}" for label, value, unit in headline))
+        st.caption(("全業界の中央値：" if all_mode else "業界中央値：") + "　/　".join(f"{label} {value}{unit}" for label, value, unit in headline))
     with st.expander("業界基準値（中央値）の詳細を見る"):
         for metric, label, unit in BASELINE_DETAIL:
             if thresholds.get(metric) is not None:
@@ -1599,7 +1651,7 @@ def page_company_data():
         missing = [label for metric, label, _ in BASELINE_HEADLINE + BASELINE_DETAIL if thresholds.get(metric) is None]
         if missing:
             st.caption(f"※ {'、'.join(missing)} は比較できる企業が少ないため表示していません（四季報で確認してください）。")
-        n_secondary = int((display_df["区分"] != "主業種").sum()) if "区分" in display_df else 0
+        n_secondary = int((display_df["区分"] != "主業種").sum()) if "区分" in display_df and not all_mode else 0
         if n_secondary:
             st.caption(f"※ 売上の3割以上をこの業界の事業が占める企業（{n_secondary}社）も含めて計算しています。")
 
@@ -1677,7 +1729,7 @@ def page_company_data():
     if st.session_state["comparison_result"]:
         st.subheader(f"「{st.session_state['selected_company']}」の比較結果")
         for metric, info in st.session_state["comparison_result"].items():
-            st.write(f"・{metric}：{info['judgement']}")
+            st.write(f"・{metric}：{baseline_wording(info['judgement'], industry)}")
         if st.session_state.get("segment_note"):
             st.caption(st.session_state["segment_note"])
         st.caption(f"企業データスコア：{st.session_state['company_score_pct']:.0f}%（-100〜100の範囲）")
@@ -1895,7 +1947,7 @@ def page_result():
     if comparison:
         st.subheader("業界基準値（中央値）との比較")
         for metric, info in comparison.items():
-            st.write(f"・{metric}：{info['judgement']}")
+            st.write(f"・{metric}：{baseline_wording(info['judgement'], industry)}")
         if st.session_state.get("segment_note"):
             st.caption(st.session_state["segment_note"])
         scored = sum(1 for info in comparison.values() if info["score"] is not None)
@@ -1923,11 +1975,11 @@ def page_result():
                 st.write(f"　- {cat}：{count}件（{count / total * 100:.0f}%）")
 
     if final_score >= 15:
-        st.success(f"「{company}」は{industry}業界では「将来性に期待あり」でしょう。")
+        st.success(f"「{company}」は{industry_label(industry)}では「将来性に期待あり」でしょう。")
     elif final_score <= -15:
-        st.warning(f"「{company}」は{industry}業界では「懸念材料あり」でしょう。")
+        st.warning(f"「{company}」は{industry_label(industry)}では「懸念材料あり」でしょう。")
     else:
-        st.write(f"「{company}」は{industry}業界では「横ばい予想」でしょう。")
+        st.write(f"「{company}」は{industry_label(industry)}では「横ばい予想」でしょう。")
 
     render_ai_summary_section(company)
 
@@ -2220,6 +2272,7 @@ def page_admin():
 PAGE_FUNCTIONS = {
     "title": page_title,
     "disclaimer": page_disclaimer,
+    "view_mode": page_view_mode,
     "industry_select": page_industry_select,
     "company_data": page_company_data,
     "reporter_comment": page_reporter_comment,
