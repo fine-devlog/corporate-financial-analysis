@@ -113,6 +113,18 @@ streamlit run analysis02.py
 メインファイルに `dashboard_app/analysis02.py` を指定し、Secrets に `.streamlit/secrets.toml` と同じ内容を設定します。
 日本語フォントはリポジトリ直下の `packages.txt` で入れています。
 
+## Docker で動かす
+
+`Dockerfile` と `compose.yaml` を用意しています。キー（`.env`・`secrets.toml`）はイメージに入れず、起動時に渡します。
+
+```bash
+docker compose up -d --build                  # http://localhost:8502 で起動
+docker compose run --rm ingest --dry-run --limit 2   # 取り込みスクリプトを1回だけ実行
+docker compose down
+```
+
+仕組みを体験しながら学ぶ手順は [DOCKER_HANDSON.md](DOCKER_HANDSON.md) にまとめています。
+
 ## テスト
 
 ```bash

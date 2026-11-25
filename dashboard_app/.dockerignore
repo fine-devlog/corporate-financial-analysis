@@ -1,0 +1,15 @@
+# イメージに入れないもの（.gitignore の Docker 版）
+# キーはイメージに入れない：イメージは人に渡したり公開したりできるので、中にキーがあると漏れる。
+# キーは「起動するとき」に外から渡す（compose.yaml を参照）。
+.env
+.streamlit/secrets.toml
+
+# 動かすのに不要なもの
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+*.zip
+Dockerfile
+compose.yaml
+.dockerignore

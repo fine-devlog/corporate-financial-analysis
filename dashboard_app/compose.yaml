@@ -1,0 +1,21 @@
+# Docker Compose：複数の箱（サービス）の起動方法をまとめて書いておくファイル
+# `docker compose up` の1行で、ここに書いた設定どおりに起動できる。
+
+services:
+  # アプリ本体（Streamlit）
+  app:
+    build: .                     # このフォルダの Dockerfile からイメージを作る
+    image: shikiho-tool:latest   # できたイメージの名前
+    ports:
+      - "8502:8501"              # 自分のPCの 8502番 → 箱の中の 8501番 につなぐ
+    volumes:
+      # キーはイメージに入れず、起動時に自分のPCのファイルを「読み取り専用」で貸す
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+    restart: unless-stopped
+
+  # EDINET の取り込みスクリプト（必要なときだけ1回動かして終わる箱）
+  ingest:
+    image: shikiho-tool:latest   # app と同じイメージを使い回す
+    profiles: ["tools"]          # `docker compose up` では起動しない（run で呼んだときだけ）
+    env_file: .env               # キーは環境変数として起動時に渡す
+    entrypoint: ["python", "edinet_ingest.py"]
