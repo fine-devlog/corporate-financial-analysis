@@ -1,5 +1,6 @@
 import colorsys
 import hmac
+import json
 import random
 import re
 import unicodedata
@@ -1561,11 +1562,11 @@ def render_metric_chart(display_df: pd.DataFrame, thresholds: dict, all_mode: bo
     st.caption(f"{len(plot_df)}社中、上位{min(top_n, len(plot_df))}社" + ("＋選択中の企業" if selected else "") + "を表示")
     if all_mode:
         st.caption("🎨 棒の色は業界です。どの業界がこの指標の上位に多いかが分かります。"
-                   + ("黒い枠の棒が、選択中の企業です。" if selected else ""))
+                   + ("選択中の企業は、棒が枠で囲まれ、社名が赤い太字になります。" if selected else ""))
 
     st.caption("👆 棒にカーソルを合わせると、その棒の色の補色に変わります。クリックするとその企業を選べます。")
     st.altair_chart(build_metric_chart(shown, metric_to_plot, thresholds.get(metric_to_plot), is_mobile_device(),
-                                       all_mode),
+                                       all_mode, is_dark_theme()),
                     width="stretch", key="metric_chart",
                     on_select="rerun", selection_mode=[ui_events.CHART_PICK_PARAM])
 
@@ -1611,8 +1612,35 @@ def chart_colors(shown: pd.DataFrame, selected, all_mode: bool) -> pd.DataFrame:
                         選択中=[bool(selected) and n == selected for n in shown["企業名"]])
 
 
+# 軸の社名の色。選択中の企業だけ赤い太字にする（バーの色が業界を表すと、どれを選んだか分かりにくいため）。
+# それ以外の社名は Streamlit の標準の色（ライト／ダークで違う）に合わせる
+SELECTED_LABEL_COLOR = {"light": "#d62728", "dark": "#ff6b6b"}
+NORMAL_LABEL_COLOR = {"light": "rgba(49, 51, 63, 0.6)", "dark": "rgba(250, 250, 250, 0.6)"}
+
+
+def is_dark_theme() -> bool:
+    try:
+        return st.context.theme.type == "dark"
+    except Exception:
+        return False
+
+
+def selected_label_style(shown: pd.DataFrame, dark: bool) -> dict:
+    """選択中の企業の社名（軸のラベル）だけを赤い太字にする、軸の設定。選択中の企業がなければ何もしない。"""
+    labels = shown.loc[shown["選択中"], "表示名"].tolist() if "選択中" in shown else []
+    if not labels:
+        return {}
+    test = f"datum.value === {json.dumps(labels[0], ensure_ascii=False)}"
+    mode = "dark" if dark else "light"
+    return {
+        "labelColor": alt.condition(test, alt.value(SELECTED_LABEL_COLOR[mode]), alt.value(NORMAL_LABEL_COLOR[mode])),
+        "labelFontWeight": alt.condition(test, alt.value("bold"), alt.value("normal")),
+        "labelFontSize": alt.condition(test, alt.value(13), alt.value(11)),
+    }
+
+
 def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool,
-                       all_mode: bool = False) -> alt.LayerChart:
+                       all_mode: bool = False, dark: bool = False) -> alt.LayerChart:
     """指標比較グラフ。パソコンは縦棒、スマホは画面幅いっぱいの横棒（社名が読めるように）。
 
     【変更】カーソルを載せた棒を、その棒の色の補色にする。
@@ -1620,6 +1648,7 @@ def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool,
       同じ棒を2枚重ね、上の棒（補色）をカーソルが載ったときだけ見せる。クリックやカーソルは上の棒で受け取る。
     """
     order = shown["表示名"].tolist()
+    label_style = selected_label_style(shown, dark)
     hover = alt.selection_point(name=ui_events.CHART_HOVER_PARAM, on="pointerover", clear="pointerout",
                                 fields=["企業名"], empty=False)
     pick = alt.selection_point(name=ui_events.CHART_PICK_PARAM, on="click", fields=["企業名"])
@@ -1638,21 +1667,23 @@ def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool,
 
     if mobile:
         # 【追加】スマホは画面が縦長なので横棒にし、社名を縦に並べる
-        position = {"y": alt.Y("表示名:N", sort=order, title=None, axis=alt.Axis(labelLimit=150)),
+        position = {"y": alt.Y("表示名:N", sort=order, title=None, axis=alt.Axis(labelLimit=150, **label_style)),
                     "x": alt.X(f"{metric}:Q", title=metric)}
         rule_encoding = {"x": "業界中央値:Q"}
         height = max(240, BAR_HEIGHT_PX * len(shown))
     else:
         # labelOverlap=False：実際のブラウザ幅だと重なりを避けて社名が間引かれていたため、全社表示する
         position = {"x": alt.X("表示名:N", sort=order, title="企業名",
-                               axis=alt.Axis(labelAngle=-60, labelOverlap=False, labelLimit=120)),
+                               axis=alt.Axis(labelAngle=-60, labelOverlap=False, labelLimit=120, **label_style)),
                     "y": alt.Y(f"{metric}:Q", title=metric)}
         rule_encoding = {"y": "業界中央値:Q"}
         height = 400
 
     base_encoding = {"color": base_color, "tooltip": tooltip, **position}
     if all_mode:  # 全業界では色が業界を表すので、選択中の企業は黒い枠で示す
-        base_encoding["stroke"] = alt.condition("datum['選択中']", alt.value("#111111"), alt.value("transparent"))
+        # 枠の色は背景と逆にする（ダークモードで黒い枠だと見えないため）
+        frame = "#ffffff" if dark else "#111111"
+        base_encoding["stroke"] = alt.condition("datum['選択中']", alt.value(frame), alt.value("transparent"))
         base_encoding["strokeWidth"] = alt.condition("datum['選択中']", alt.value(3), alt.value(0))
     bars = alt.Chart(shown).mark_bar().encode(**base_encoding)
     hover_bars = alt.Chart(shown).mark_bar(cursor="pointer").encode(

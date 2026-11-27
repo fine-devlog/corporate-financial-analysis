@@ -709,3 +709,21 @@ def test_switch_industry_on_company_page(make_app):
     at.selectbox(key="industry_switch").set_value("2.IT・ソフト・SI").run()
     assert at.session_state["selected_industry"] == "2.IT・ソフト・SI"
     assert at.selectbox(key="industry_switch").value == "2.IT・ソフト・SI"
+
+
+def test_selected_company_label_is_red(make_app):
+    """バーの色が業界を表す全企業のグラフでも、選んだ企業が分かるように、軸の社名を赤い太字にする。"""
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    at.text_input(key="company_search_input").input("7203").run()
+    click(at, "検索")
+    click(at, "この企業を業界と比較する")
+    axis = _vega_specs(at)[0]["layer"][0]["encoding"]["x"]["axis"]
+    assert axis["labelColor"]["condition"]["test"] == 'datum.value === "トヨタ自動車"'
+    assert axis["labelColor"]["condition"]["value"] == "#d62728"
+    assert axis["labelFontWeight"]["condition"]["value"] == "bold"
+
+
+def test_no_label_style_without_selection(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    axis = _vega_specs(at)[0]["layer"][0]["encoding"]["x"]["axis"]
+    assert "labelColor" not in axis
