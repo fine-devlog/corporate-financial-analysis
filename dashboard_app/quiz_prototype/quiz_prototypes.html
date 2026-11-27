@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- 四季報クイズの試作（10パターン）。ブラウザで直接開くと動く。アプリ本体には組み込んでいない。詳しくは README.md -->
+<title>四季報クイズ試作</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap">
+<style>
+/* Layout: 上にパターン切り替えのタブ、下にスマホ幅のクイズ画面（実際にアプリに入れたときの幅を想定）。 */
+:root {
+  --bg: #eef2f1;
+  --surface: #ffffff;
+  --ink: #17211f;
+  --muted: #5b6966;
+  --line: #d3dcda;
+  --accent: #0d6b5c;
+  --accent-soft: #d8eeea;
+  --marker: #f6d66a;
+  --ok: #1d7a3e;
+  --ok-soft: #dcf1e2;
+  --ng: #b3261e;
+  --ng-soft: #f8dedb;
+  --a: #2f5fa7;
+  --b: #8a4f9e;
+  --font-display: "Zen Kaku Gothic New", "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif;
+  --font-body: "Noto Sans JP", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111816; --surface: #19221f; --ink: #e4ece9; --muted: #98a8a4; --line: #2b3834;
+    --accent: #5fc6b4; --accent-soft: #163631; --marker: #7d6a22; --ok: #72d197; --ok-soft: #173424;
+    --ng: #f28b82; --ng-soft: #3a1f1c; --a: #8fb4ee; --b: #d3a2e3; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111816; --surface: #19221f; --ink: #e4ece9; --muted: #98a8a4; --line: #2b3834;
+  --accent: #5fc6b4; --accent-soft: #163631; --marker: #7d6a22; --ok: #72d197; --ok-soft: #173424;
+  --ng: #f28b82; --ng-soft: #3a1f1c; --a: #8fb4ee; --b: #d3a2e3; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.75;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 56px;
+}
+.page { max-width: 980px; margin: 0 auto; }
+header { padding: 32px 0 12px; }
+.eyebrow { font-size: 12px; letter-spacing: .12em; color: var(--accent); font-weight: 700; }
+h1 { font-family: var(--font-display); font-weight: 900; font-size: clamp(24px, 4.4vw, 36px); line-height: 1.3; margin: 4px 0 8px; text-wrap: balance; }
+.lead { color: var(--muted); max-width: 64ch; margin: 0; }
+
+.tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 22px 0 18px; }
+.tab {
+  font: inherit; text-align: left; cursor: pointer; padding: 10px 12px; border-radius: 10px;
+  border: 1.5px solid var(--line); background: var(--surface); color: var(--ink); display: grid; gap: 0; min-width: 0;
+}
+.tab small { font-size: 11px; color: var(--muted); letter-spacing: .06em; }
+.tab b { font-size: 14px; line-height: 1.4; }
+.tab[aria-selected="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.tab:focus-visible { outline: 3px solid var(--marker); outline-offset: 2px; }
+
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: start; }
+.about { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; min-width: 0; }
+.about h2 { font-family: var(--font-display); font-size: 18px; margin: 0 0 6px; }
+.about dl { margin: 0; display: grid; gap: 10px; }
+.about dt { font-size: 12px; font-weight: 700; color: var(--accent); letter-spacing: .04em; }
+.about dd { margin: 0; font-size: 14px; }
+.ease { display: inline-flex; gap: 3px; vertical-align: middle; }
+.ease i { width: 10px; height: 10px; border-radius: 2px; background: var(--line); }
+.ease i.on { background: var(--accent); }
+
+/* クイズ本体（アプリに入れたときの幅） */
+.phone { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 18px; min-width: 0; }
+.top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.progress { height: 6px; background: var(--line); border-radius: 3px; margin: 8px 0 16px; overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+.qtag { display: inline-block; font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 10px; margin-bottom: 6px; }
+.question { font-family: var(--font-display); font-weight: 700; font-size: 20px; line-height: 1.5; margin: 0 0 14px; text-wrap: balance; }
+.persona { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 14px; }
+.persona .face { flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--accent-soft); display: grid; place-items: center; font-weight: 700; color: var(--accent); }
+.persona .bubble { background: var(--bg); border-radius: 4px 14px 14px 14px; padding: 10px 14px; font-size: 15px; min-width: 0; }
+
+.choices { display: grid; gap: 8px; }
+.choice {
+  font: inherit; text-align: left; cursor: pointer; padding: 12px 14px; border-radius: 10px;
+  border: 1.5px solid var(--line); background: var(--surface); color: var(--ink); width: 100%;
+}
+.choice:hover:not(:disabled) { border-color: var(--accent); }
+.choice:focus-visible { outline: 3px solid var(--marker); outline-offset: 2px; }
+.choice:disabled { cursor: default; }
+.choice.correct { border-color: var(--ok); background: var(--ok-soft); }
+.choice.wrong { border-color: var(--ng); background: var(--ng-soft); }
+
+.ox { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ox .choice { text-align: center; font-family: var(--font-display); font-size: 40px; font-weight: 900; padding: 18px 0; line-height: 1; }
+.statement { background: var(--bg); border-radius: 12px; padding: 18px; font-size: 17px; font-weight: 500; margin-bottom: 14px; }
+
+.mapgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.mapgrid .choice { font-size: 13px; padding: 10px 8px; text-align: center; min-height: 56px; display: grid; place-items: center; line-height: 1.35; }
+.mapgrid .wide2 { grid-column: span 2; }
+.mapgrid .wide4 { grid-column: span 4; }
+.mapnote { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+
+.vs-wrap { overflow-x: auto; margin-bottom: 12px; }
+.vs { width: 100%; border-collapse: collapse; font-size: 14px; }
+.vs th, .vs td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vs th:first-child, .vs td:first-child { text-align: left; color: var(--muted); white-space: normal; }
+.vs thead th { font-size: 13px; }
+.vs .ca { color: var(--a); }
+.vs .cb { color: var(--b); }
+.vs-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.vs-choices .choice { text-align: center; font-weight: 700; font-size: 17px; }
+
+.feedback { margin-top: 14px; border-radius: 12px; padding: 12px 14px; border-left: 4px solid var(--ok); background: var(--ok-soft); }
+.feedback.ng { border-left-color: var(--ng); background: var(--ng-soft); }
+.feedback .head { font-weight: 700; margin-bottom: 2px; }
+.feedback .where { font-size: 13px; font-weight: 700; margin-top: 6px; }
+.feedback .where span { background: var(--marker); color: var(--ink); padding: 0 4px; border-radius: 3px; }
+.feedback p { margin: 0; }
+.row { display: flex; justify-content: flex-end; margin-top: 12px; }
+.btn {
+  font: 500 15px var(--font-body); padding: 10px 18px; border-radius: 10px; cursor: pointer;
+  border: 1.5px solid var(--accent); background: var(--accent); color: var(--surface);
+}
+.btn.ghost { background: var(--surface); color: var(--accent); }
+.btn:focus-visible { outline: 3px solid var(--marker); outline-offset: 2px; }
+
+.result { text-align: center; padding: 8px 0; }
+.result .big { font-family: var(--font-display); font-weight: 900; font-size: 48px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.result .msg { color: var(--muted); margin: 6px 0 14px; }
+.review { text-align: left; display: grid; gap: 8px; margin: 12px 0; }
+.review div { background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+.review b { display: block; }
+.review .where span { background: var(--marker); color: var(--ink); padding: 0 4px; border-radius: 3px; font-weight: 700; }
+
+.pick { margin-top: 28px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.pick h2 { font-family: var(--font-display); font-size: 18px; margin: 0 0 8px; }
+.cmp-wrap { overflow-x: auto; }
+.cmp { border-collapse: collapse; width: 100%; font-size: 14px; }
+.cmp th, .cmp td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.cmp th { font-size: 12px; color: var(--muted); }
+.cmp tr:last-child td { border-bottom: none; }
+
+/* 問題文と「次へ」ボタンを横に並べる */
+.qhead { display: flex; gap: 12px; align-items: flex-start; }
+.qmain { flex: 1; min-width: 0; }
+.qnext { flex: none; padding-top: 22px; }
+.qnext:empty { display: none; }
+.qnext .btn { white-space: nowrap; padding: 8px 14px; }
+/* F 計算ドリル */
+.givens { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.givens div { background: var(--bg); border-radius: 10px; padding: 8px 12px; }
+.givens small { display: block; font-size: 12px; color: var(--muted); }
+.givens b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.calcrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.calcrow input {
+  font: 600 20px var(--font-body); width: 9em; max-width: 100%; padding: 8px 12px; border-radius: 10px;
+  border: 1.5px solid var(--line); background: var(--surface); color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.calcrow input:focus-visible { outline: 3px solid var(--marker); outline-offset: 2px; }
+/* G 見出し */
+.headword { text-align: center; font-family: var(--font-display); font-weight: 900; font-size: 40px; padding: 22px 0; background: var(--bg); border-radius: 12px; margin-bottom: 14px; }
+.swipe { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.swipe .choice { text-align: center; font-weight: 700; font-size: 17px; padding: 16px 0; }
+/* H 企業探偵 */
+.clue { border: 1.5px dashed var(--accent); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+.clue .ttl { font-size: 12px; font-weight: 700; color: var(--accent); letter-spacing: .06em; }
+.clue p { margin: 4px 0 0; }
+.clue table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 4px; }
+.clue td { padding: 4px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.clue td + td { text-align: right; }
+.clue tr:last-child td { border-bottom: none; }
+.memo { text-align: left; background: var(--bg); border-radius: 12px; padding: 12px 16px; margin: 12px 0; }
+.memo h3 { font-size: 15px; margin: 0 0 6px; }
+.memo ul { margin: 0; padding-left: 1.2em; font-size: 14px; }
+/* I ペア合わせ */
+.match { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.match .col { display: grid; gap: 6px; align-content: start; }
+.match .col > small { font-size: 12px; color: var(--muted); }
+.match .choice { font-size: 14px; padding: 9px 10px; }
+.match .choice.sel { border-color: var(--accent); background: var(--accent-soft); }
+.match .choice.shake { border-color: var(--ng); background: var(--ng-soft); }
+/* J 診断 */
+.rec { display: grid; gap: 8px; text-align: left; margin: 12px 0; }
+.rec div { background: var(--bg); border-radius: 12px; padding: 10px 14px; }
+.rec .rank { font-size: 12px; font-weight: 700; color: var(--accent); }
+.rec b { display: block; font-size: 16px; }
+.rec .where span { background: var(--marker); color: var(--ink); padding: 0 4px; border-radius: 3px; font-weight: 700; font-size: 13px; }
+.rec p { margin: 4px 0 0; font-size: 14px; }
+
+@media (max-width: 860px) {
+  .tabs { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); overflow-x: auto; padding-bottom: 4px; }
+  .stage { grid-template-columns: minmax(0, 1fr); }
+  .about { order: 2; }
+}
+@media (max-width: 420px) {
+  .mapgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mapgrid .wide2, .mapgrid .wide4 { grid-column: span 2; }
+}
+@media (prefers-reduced-motion: reduce) { .progress i { transition: none; } }
+</style>
+
+<div class="page">
+<header>
+  <div class="eyebrow">ヘルプのクイズ化・試作（アプリ本体には未実装）</div>
+  <h1>10の形を、実際に解いて比べる</h1>
+  <p class="lead">上のタブで形を切り替えられます。中身はどれも、今のヘルプ（四季報ミニガイドと指標の見方）と同じ情報です。気に入った形を教えてもらえれば、それをアプリに入れます。</p>
+</header>
+
+<div class="tabs" role="tablist" aria-label="クイズの形" id="tabs"></div>
+
+<div class="stage">
+  <div class="phone" id="quiz" aria-live="polite"></div>
+  <aside class="about" id="about"></aside>
+</div>
+
+<section class="pick">
+  <h2>10パターンの比較</h2>
+  <div class="cmp-wrap">
+  <table class="cmp">
+    <thead><tr><th>形</th><th>身につくこと</th><th>1問の時間</th><th>アプリへの入れやすさ</th></tr></thead>
+    <tbody>
+      <tr><td><b>A. 欄あて4択</b></td><td>どの欄に書いてあるか</td><td>10秒</td><td>とても簡単</td></tr>
+      <tr><td><b>B. 就活の悩み</b></td><td>知りたいこと → 見る指標と欄</td><td>20秒</td><td>簡単</td></tr>
+      <tr><td><b>C. 紙面タップ</b></td><td>欄の名前と、そこに何があるか</td><td>10秒</td><td>ふつう（ボタンを格子状に並べる）</td></tr>
+      <tr><td><b>D. ○✕スピード</b></td><td>数字の読み違い・落とし穴</td><td>5秒</td><td>とても簡単</td></tr>
+      <tr><td><b>E. 2社どっち？</b></td><td>数字を実際に読んで判断する力</td><td>30秒</td><td>簡単（表＋2択）</td></tr>
+      <tr><td><b>F. 計算ドリル</b></td><td>四季報の数字から指標を自分で出す力</td><td>30秒</td><td>とても簡単</td></tr>
+      <tr><td><b>G. 見出し判定</b></td><td>記者コメントの見出しの意味</td><td>5秒</td><td>とても簡単</td></tr>
+      <tr><td><b>H. 企業探偵</b></td><td>複数の欄を組み合わせて1社を読む流れ</td><td>全体で3分</td><td>簡単</td></tr>
+      <tr><td><b>I. ペア合わせ</b></td><td>情報と欄の対応を一気に</td><td>全体で1分</td><td>むずかしめ（2回のクリックを覚える）</td></tr>
+      <tr><td><b>J. 自分診断</b></td><td>自分が最初に見るべき数字</td><td>全体で1分</td><td>簡単</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="mapnote">組み合わせることもできます（例：最初にDで落とし穴を知り、Bで「何を見ればいいか」を覚える）。</p>
+</section>
+</div>
+
+<script>
+(function () {
+  // ---------------------------------------------------------------
+  // 中身はすべて dashboard_app/shikiho_guide.py の内容から作っている
+  // ---------------------------------------------------------------
+  var PATTERNS = [
+    {
+      id: "A", name: "欄あて4択", short: "どの欄？",
+      about: {
+        title: "A. 欄あて4択",
+        what: "「平均年収はどの欄？」のように、四季報のどこに書いてあるかを4つから選ぶ、いちばん基本の形です。",
+        good: "1問が短いので、スキマ時間に向いています。間違えた問題だけを最後にまとめて見られます。",
+        weak: "欄の名前は覚えられますが、「なぜその数字を見るのか」までは身につきにくいです。",
+        st: "st.radio（選択肢）＋ st.button（答える）＋ st.session_state（何問目か・点数）で作れます。",
+        ease: 5
+      },
+      type: "choice",
+      qs: [
+        { tag: "平均年収", q: "平均年収は、四季報のどの欄に書いてある？", o: ["【従業員】欄", "【業績】欄", "【特色】欄", "【財務】欄"], a: 0,
+          ex: "【従業員】欄の、いちばん右の「年」で囲まれた数字です。単独ベース（その会社だけ）で、残業代や賞与も含みます。", where: "【従業員】欄" },
+        { tag: "営業利益率", q: "営業利益率を自分で計算したい。使う数字が載っているのは？", o: ["【キャッシュフロー】欄", "【業績】欄", "【連結事業】欄", "【株主】欄"], a: 1,
+          ex: "【業績】欄の売上高と営業利益を使い、営業利益 ÷ 売上高 × 100 で計算します。単位は原則100万円です。", where: "【業績】欄" },
+        { tag: "海外売上比率", q: "海外でどれくらい稼いでいるか（海外売上比率）は、どこを見る？", o: ["【特色】欄", "【従業員】欄", "【連結事業】欄の【海外】", "本文の記者コメント"], a: 2,
+          ex: "【連結事業】欄（単独の会社は【単独事業】）の最後にある【海外】の数字です。", where: "【連結事業】欄の【海外】" },
+        { tag: "平均勤続年数", q: "平均勤続年数が載っているのは？", o: ["【従業員】欄", "【特色】欄", "【業績】欄", "会社四季報には載っていない"], a: 3,
+          ex: "ひっかけ問題です。平均勤続年数は会社四季報には載っていません。有価証券報告書の「従業員の状況」か、就職四季報で確認します（このツールは有報から自動で取っています）。", where: "有価証券報告書・就職四季報" },
+        { tag: "業績の予想", q: "【業績】欄で「予」が付いた行は、だれの予想？", o: ["会社が発表した予想", "四季報（記者）の予想", "証券会社のアナリストの平均", "前の年と同じ数字"], a: 1,
+          ex: "「予」は四季報の記者の予想、「会」は会社が発表した予想です。記者の予想の方が高ければ強気、低ければ慎重に見ています。", where: "【業績】欄の「予」と「会」" }
+      ]
+    },
+    {
+      id: "B", name: "就活の悩みから選ぶ", short: "悩み → 指標",
+      about: {
+        title: "B. 就活の悩みから選ぶ",
+        what: "「長く働ける会社がいい」のような、就活生の悩みから入ります。その悩みに答えるには、どの数字をどこで見ればいいかを選びます。",
+        good: "「何のためにその数字を見るのか」がいっしょに覚えられます。ヘルプを読まない人にも、自分ごととして入りやすい形です。",
+        weak: "選択肢の文が長くなるので、1問に少し時間がかかります。",
+        st: "st.chat_message で吹き出しを出し、その下に st.radio。A とほぼ同じ作りです。",
+        ease: 4
+      },
+      type: "persona",
+      qs: [
+        { tag: "定着", q: "長く安心して働ける会社がいいな。何を見ればいい？", o: ["営業利益率", "平均勤続年数と平均年齢を、セットで見る", "海外売上比率", "売上高成長率だけ"], a: 1,
+          ex: "平均勤続年数が長ければ、人が定着している傾向です。平均年齢とも比べます（平均年齢40歳なのに勤続5年なら、中途入社が多いか入れ替わりが多い）。", where: "有価証券報告書・就職四季報（勤続）＋【従業員】欄（年齢）" },
+        { tag: "安定", q: "つぶれにくい会社かどうか知りたい。", o: ["自己資本比率", "平均年収", "記者コメントの見出しの数", "従業員数"], a: 0,
+          ex: "自己資本比率は、会社の財産のうち返さなくてよいお金の割合で、高いほど倒産しにくいと言えます。ただし銀行などの金融は仕組み上とても低くなるので、他の業界と比べません。", where: "【財務】欄" },
+        { tag: "海外", q: "いつか海外で働きたい。海外の仕事が多そうか、どう調べる？", o: ["平均年齢", "営業CFマージン", "海外売上比率", "創業年"], a: 2,
+          ex: "売上のうち海外で稼いでいる割合です。高ければ海外の仕事に関わる機会が多い可能性があります。為替の影響も受けやすくなります。", where: "【連結事業】欄の【海外】" },
+        { tag: "働きやすさ", q: "残業時間や有給休暇の取りやすさが気になる。", o: ["会社四季報の【特色】欄", "会社四季報の【業績】欄", "就職四季報", "このツールの総合評価"], a: 2,
+          ex: "残業時間・有給休暇・3年以内の離職率・初任給などの働きやすさの数字は、会社四季報ではなく就職四季報に載っています。", where: "就職四季報" },
+        { tag: "部門", q: "入りたい部門が、会社の中で稼ぎ頭なのか知りたい。", o: ["【連結事業】欄の売上構成と利益率", "平均年収", "【株主】欄", "売上高成長率"], a: 0,
+          ex: "【連結事業】欄には部門ごとの売上の割合（％）と、カッコ内に利益率（％）が書いてあります。どの部門で利益を稼いでいるかが分かります。", where: "【連結事業】欄" }
+      ]
+    },
+    {
+      id: "C", name: "紙面タップ", short: "欄をタップ",
+      about: {
+        title: "C. 紙面タップ",
+        what: "四季報の欄を並べた図を見せて、聞かれた情報がある欄をタップします。欄の名前と中身を、図として覚えます。",
+        good: "4択より「探す」感覚に近く、実際に四季報を開いたときに迷いにくくなります。毎回同じ図なので、くり返すほど速くなります。",
+        weak: "欄の並び方は、本物の紙面とは違うイメージ図です（本物の配置をそのまま使うと、四季報の紙面の再現になってしまうため）。",
+        st: "st.columns でボタンを格子状に並べます。押したボタンだけ色を変えるには、少し工夫が要ります。",
+        ease: 3
+      },
+      type: "map",
+      map: [
+        ["特色", 2], ["連結事業", 2],
+        ["本文記事（記者コメント）", 4],
+        ["業績", 4],
+        ["財務", 1], ["キャッシュフロー", 1], ["従業員", 1], ["決算・設立・上場", 1]
+      ],
+      qs: [
+        { tag: "平均年収", q: "平均年収はどこ？", a: "従業員", ex: "「年」で囲まれた数字が平均年収、カッコ内が平均年齢です。", where: "【従業員】欄" },
+        { tag: "営業CF", q: "営業キャッシュフロー（本業で入ってきた現金）はどこ？", a: "キャッシュフロー", ex: "営業CF ÷ 売上高 × 100 で営業CFマージンを計算します。売上高は【業績】欄から取ります。", where: "【キャッシュフロー】欄" },
+        { tag: "設立年", q: "会社の設立年はどこ？", a: "決算・設立・上場", ex: "【設立】は原則、株式会社として登記した年月です。実際の創業はもっと古いこともあるので、【特色】の沿革も見ます。", where: "【決算・設立・上場】欄の【設立】" },
+        { tag: "見出し", q: "「最高益」「下方修正」のような記者コメントの見出しはどこ？", a: "本文記事（記者コメント）", ex: "2つの段落それぞれの先頭にある【】の言葉です。前半は業績の見通し、後半はトピックや今後の課題です。", where: "本文記事" },
+        { tag: "業界での地位", q: "業界で何位か、どこかの子会社か、が分かるのは？", a: "特色", ex: "事業内容、業界での地位、親会社などの資本関係、沿革が短くまとまっています。", where: "【特色】欄" },
+        { tag: "自己資本比率", q: "自己資本比率（つぶれにくさ）はどこ？", a: "財務", ex: "高いほど倒産しにくいと言えます。銀行などの金融は仕組み上とても低いので、他の業界と比べません。", where: "【財務】欄" }
+      ]
+    },
+    {
+      id: "D", name: "○✕スピード", short: "落とし穴",
+      about: {
+        title: "D. ○✕スピード",
+        what: "数字の「よくある読み違い」を、○か✕で答えます。どこに書いてあるかより、見るときの注意点を覚える形です。",
+        good: "1問5秒で終わるので、いちばん気軽です。「平均年齢が高い＝良い会社」のような思い込みを崩せます。",
+        weak: "欄の場所は身につきません。A・B・C のどれかと組み合わせると効果的です。",
+        st: "st.columns(2) に ○ と ✕ のボタンを置くだけで作れます。",
+        ease: 5
+      },
+      type: "ox",
+      qs: [
+        { tag: "平均年齢", q: "平均年齢が高い会社ほど、良い会社だ。", a: false,
+          ex: "高い・低いそれ自体に良し悪しはありません。高ければベテランが多い一方、若手が少なく昇進が詰まっている可能性もあります。", where: "【従業員】欄" },
+        { tag: "持株会社", q: "「〇〇ホールディングス」は、平均年収が高めに出やすい。", a: true,
+          ex: "持株会社の平均年収は、本社の少人数の管理職だけの平均になるため、高く出やすくなります。", where: "【従業員】欄（単独ベース）" },
+        { tag: "利益率", q: "営業利益率は、違う業界の会社どうしで比べるとよく分かる。", a: false,
+          ex: "業界によって普通の水準が大きく違います（小売・商社は低め、ソフトウェアや医薬は高め）。同じ業界の中で比べます。", where: "【業績】欄から計算" },
+        { tag: "営業CF", q: "利益は出ているのに、営業CFのマイナスが続くのは要注意だ。", a: true,
+          ex: "利益が現金として入ってきていない状態です。代金の回収が遅いなどの可能性があり、危険信号です。", where: "【キャッシュフロー】欄" },
+        { tag: "成長率", q: "売上高が増えていれば、利益も必ず増えている。", a: false,
+          ex: "「増収減益」（売上は増えたが利益は減った）もあります。原材料費などのコストが増えたときに起こります。売上と利益の成長率はセットで見ます。", where: "【業績】欄" },
+        { tag: "平均年収", q: "平均年収を見れば、自分の初任給のだいたいの額が分かる。", a: false,
+          ex: "平均年収は社員全体の平均で、初任給や自分が入る職種の給与とは別物です。初任給は就職四季報で確認します。", where: "【従業員】欄／就職四季報" }
+      ]
+    },
+    {
+      id: "E", name: "2社どっち？", short: "数字を読む",
+      about: {
+        title: "E. 2社どっち？",
+        what: "架空の2社の数字を見比べて、「本業の稼ぐ力が強いのは？」のような問いに答えます。数字を実際に読む練習です。",
+        good: "ツールの比較画面とそのままつながるので、クイズのあとにツールを使うと理解が深まります。計算のしかたも身につきます。",
+        weak: "少し考える必要があり、1問に時間がかかります。数字が苦手な人には、最初はハードルが高めです。",
+        st: "st.dataframe か st.table で2社の表を出し、st.columns(2) にボタンを2つ置きます。",
+        ease: 4
+      },
+      type: "vs",
+      qs: [
+        { tag: "営業利益率", q: "本業の稼ぐ力が強いのは？", rows: [["売上高", "1,000億円", "3,000億円"], ["営業利益", "150億円", "90億円"]], a: 0,
+          ex: "営業利益 ÷ 売上高 で比べます。A社は 150 ÷ 1,000 ＝ 15%、B社は 90 ÷ 3,000 ＝ 3%。売上や利益の「額」が大きくても、稼ぐ力が強いとは限りません。", where: "【業績】欄から計算" },
+        { tag: "定着", q: "人が長く定着していそうなのは？", rows: [["平均年齢", "41歳", "41歳"], ["平均勤続年数", "5年", "17年"]], a: 1,
+          ex: "平均年齢が同じでも、A社は勤続5年なので、中途入社が多いか入れ替わりが多いと考えられます。", where: "【従業員】欄＋有価証券報告書" },
+        { tag: "営業CF", q: "利益がちゃんと現金で入ってきているのは？", rows: [["営業利益率", "10%", "10%"], ["営業CFマージン", "12%", "−4%"]], a: 0,
+          ex: "B社は利益が出ているのに、本業の現金はマイナスです。代金の回収が遅れているなどの可能性があり、続くようなら危険信号です。", where: "【キャッシュフロー】欄＋【業績】欄" },
+        { tag: "増収減益", q: "「増収減益」なのは？", rows: [["売上高成長率", "−3%", "+8%"], ["営業利益成長率", "+5%", "−12%"]], a: 1,
+          ex: "B社は売上が増えて（増収）利益が減った（減益）。コストが増えた可能性があります。A社は減収増益で、コスト削減のことが多い形です。", where: "【業績】欄" },
+        { tag: "平均年収", q: "若いうちから給与水準が高そうなのは？", rows: [["平均年収", "800万円", "800万円"], ["平均年齢", "45歳", "32歳"]], a: 1,
+          ex: "同じ800万円でも、平均年齢32歳と45歳では意味が違います。平均年収は必ず平均年齢とセットで見ます。", where: "【従業員】欄" }
+      ]
+    },
+    {
+      id: "F", name: "計算ドリル", short: "自分で計算",
+      about: {
+        title: "F. 計算ドリル",
+        what: "四季報に載っている数字（売上高や営業利益）から、営業利益率や成長率を自分で計算して入力します。",
+        good: "ツールが自動で出している数字の意味が、手を動かして分かります。四季報に載っていない指標も、自分で出せるようになります。",
+        weak: "電卓が要る問題もあり、スマホだと少し面倒です。小数第1位まで合っていれば正解にしています。",
+        st: "st.number_input と st.button で作れます。いちばん素直な形です。",
+        ease: 5
+      },
+      type: "calc",
+      qs: [
+        { tag: "営業利益率", q: "営業利益率は何％？", givens: [["売上高", "2,000"], ["営業利益", "160"]], a: 8.0, unit: "%",
+          ex: "営業利益 ÷ 売上高 × 100 ＝ 160 ÷ 2,000 × 100 ＝ 8.0%。【業績】欄の数字の単位は原則100万円ですが、割り算なので単位は気にしなくて大丈夫です。", where: "【業績】欄" },
+        { tag: "売上高成長率", q: "売上高成長率は何％？", givens: [["今期の売上高", "1,100"], ["前期の売上高", "1,000"]], a: 10.0, unit: "%",
+          ex: "（今期 − 前期）÷ 前期 × 100 ＝（1,100 − 1,000）÷ 1,000 × 100 ＝ 10.0%。【業績】欄の、直近の本決算の行と1つ上の行を比べます。", where: "【業績】欄" },
+        { tag: "営業CFマージン", q: "営業CFマージンは何％？", givens: [["営業CF", "90"], ["売上高", "1,500"]], a: 6.0, unit: "%",
+          ex: "営業CF ÷ 売上高 × 100 ＝ 90 ÷ 1,500 × 100 ＝ 6.0%。営業CFは【キャッシュフロー】欄、売上高は【業績】欄から取ります。", where: "【キャッシュフロー】欄＋【業績】欄" },
+        { tag: "営業利益成長率", q: "営業利益成長率は何％？（減ったらマイナス）", givens: [["今期の営業利益", "45"], ["前期の営業利益", "60"]], a: -25.0, unit: "%",
+          ex: "（45 − 60）÷ 60 × 100 ＝ −25.0%。前期が赤字（マイナス）だと、この式は意味を持たないので、ツールでは空欄にしています。", where: "【業績】欄" }
+      ]
+    },
+    {
+      id: "G", name: "見出し判定", short: "見出しの意味",
+      about: {
+        title: "G. 見出し判定",
+        what: "記者コメントの見出し（【最高益】【反落】など）を1つずつ出し、良い知らせか悪い知らせかを選びます。",
+        good: "四季報でいちばん目に入る【】の言葉が読めるようになります。このツールの「記者コメント」画面の入力にも直接役立ちます。",
+        weak: "良い・悪いの2つに分けるので、「足踏み」のような弱い言葉の細かい差までは伝わりにくいです。点数はツールの見出し辞書の値で、その点数は生成AIの補助を受けて付けたものです。",
+        st: "st.columns(2) にボタンを2つ置くだけです。D とほぼ同じ作りです。",
+        ease: 5
+      },
+      type: "swipe",
+      labels: [["good", "良い知らせ"], ["bad", "悪い知らせ"]],
+      qs: [
+        { tag: "利益", q: "最高益", a: "good", ex: "利益が過去最高になる見通し、という意味です。ツールの辞書では +5点（いちばん強いプラス）です。", where: "本文記事の【】" },
+        { tag: "業績の流れ", q: "反落", a: "bad", ex: "増えていた業績や利益が、減少に転じるという意味です。辞書では −3点です。", where: "本文記事の【】" },
+        { tag: "損益", q: "黒字化", a: "good", ex: "赤字から黒字に変わる見通しです。辞書では +4点です。", where: "本文記事の【】" },
+        { tag: "予想の修正", q: "独自増額", a: "good", ex: "四季報の記者が、会社が出している予想より高い数字を独自に予想している、という意味です。辞書では +5点です。【業績】欄の「予」が「会」より上になっているはずです。", where: "本文記事の【】＋【業績】欄" },
+        { tag: "配当", q: "減配", a: "bad", ex: "株主への配当を減らす見通しです。業績が苦しいサインのことがあります。辞書では −4点です。", where: "本文記事の【】" },
+        { tag: "業績の流れ", q: "足踏み", a: "bad", ex: "改善が止まって横ばい、という意味です。悪い知らせ寄りですが、辞書では −1点と弱めです。", where: "本文記事の【】" }
+      ]
+    },
+    {
+      id: "H", name: "企業探偵", short: "1社を調べる",
+      about: {
+        title: "H. 企業探偵",
+        what: "架空の会社を1社だけ、四季報の欄を1つずつ開きながら調べていきます。最後に、調べたことが「調査メモ」にまとまります。",
+        good: "欄をバラバラに覚えるのではなく、「1社をどう読むか」の流れが身につきます。実際の企業研究の手順に近い形です。",
+        weak: "1回で3分ほどかかります。同じ会社だと2回目は答えを覚えてしまうので、会社を何社か用意する必要があります。",
+        st: "st.container で手がかりのカードを出し、その下に st.radio。手順が進むごとに session_state の段階を1つ進めます。",
+        ease: 4
+      },
+      type: "case",
+      qs: [
+        { tag: "手がかり1：【業績】欄", clue: { ttl: "【業績】欄（単位：億円）", rows: [["前期の売上高", "480"], ["今期の売上高", "520"], ["前期の営業利益", "30"], ["今期の営業利益", "26"]] },
+          q: "この会社の今期は？", o: ["増収増益", "増収減益", "減収増益", "減収減益"], a: 1,
+          ex: "売上は 480 → 520 で増えた（増収）、営業利益は 30 → 26 で減った（減益）。コストが増えた可能性があります。", where: "【業績】欄", memo: "今期は増収減益（売上は伸びたが利益は減った）" },
+        { tag: "手がかり2：業界と比べる", clue: { ttl: "計算してみる", rows: [["この会社の営業利益率", "26 ÷ 520 ＝ 5.0%"], ["同じ業界の中央値", "8.0%"]] },
+          q: "業界と比べて、本業の稼ぐ力は？", o: ["業界より高い", "業界並み", "業界より低い"], a: 2,
+          ex: "5.0% は業界の中央値 8.0% より低いです。利益率は業界ごとに普通の水準が違うので、必ず同じ業界の中で比べます。", where: "【業績】欄から計算", memo: "営業利益率は5.0%で、業界（8.0%）より低い" },
+        { tag: "手がかり3：【従業員】欄と【設立】", clue: { ttl: "【従業員】欄・【設立】", rows: [["設立", "1975年"], ["平均年齢", "34歳"], ["平均年収", "560万円"]] },
+          q: "設立から50年たつのに、平均年齢は34歳。考えられることは？", o: ["ベテランが多く、人が辞めにくい", "若手を多く採用しているか、人の入れ替わりが多い", "海外の仕事が多い", "給与水準がとても高い"], a: 1,
+          ex: "歴史のある会社なのに平均年齢が若いときは、採用を増やしているか、離職が多い可能性があります。どちらなのかは、有価証券報告書の平均勤続年数や、就職四季報の離職率で確かめます。", where: "【従業員】欄＋【決算・設立・上場】欄", memo: "歴史の割に平均年齢が若い → 勤続年数・離職率を確かめたい" },
+        { tag: "手がかり4：記者コメント", clue: { ttl: "本文記事の見出し", rows: [["前半の見出し", "【反落】"]] },
+          q: "見出しの【反落】は、手がかり1と合っている？", o: ["合っている（利益が減少に転じる）", "合っていない（利益は増えている）"], a: 0,
+          ex: "【反落】は、増えていたものが減少に転じるという意味です。手がかり1の「減益」と合っています。理由は見出しのあとの本文に書いてあります。", where: "本文記事の【】", memo: "記者も【反落】と見ている。理由は本文で確認" }
+      ]
+    },
+    {
+      id: "I", name: "ペア合わせ", short: "情報 × 欄",
+      about: {
+        title: "I. ペア合わせ",
+        what: "左の「知りたい情報」と、右の「欄」を正しく組み合わせます。左を押してから右を押すと、合っていればペアが消えます。",
+        good: "8つの対応を1分で一気に確認できます。ゲームっぽく、くり返しやすい形です。",
+        weak: "Streamlit は「1回目に押したもの」を覚えておく工夫が要るので、アプリに入れるのはいちばん手間がかかります。",
+        st: "st.session_state に「左で選んだもの」を入れておき、右を押したときに照らし合わせます。ボタンが多いので、画面の更新が少し重くなります。",
+        ease: 2
+      },
+      type: "match",
+      pairs: [
+        ["平均年収", "従業員"], ["自己資本比率", "財務"], ["営業キャッシュフロー", "キャッシュフロー"], ["設立年", "決算・設立・上場"],
+        ["海外売上比率", "連結事業"], ["業界での地位・親会社", "特色"], ["最高益などの見出し", "本文記事"], ["売上高の予想", "業績"]
+      ]
+    },
+    {
+      id: "J", name: "自分診断", short: "あなた向け",
+      about: {
+        title: "J. 自分診断",
+        what: "正解のある問題ではなく、自分の希望についての4つの質問に答えます。その答えから、最初に見るべき数字を3つ選んで、見る場所と見方を教えます。",
+        good: "「全部見なきゃ」という負担がなくなり、自分に必要なところから読み始められます。ヘルプの入口にいちばん向いています。",
+        weak: "クイズではないので、知識が身についたかは確かめられません。A〜I のどれかと組み合わせると効果的です。",
+        st: "st.radio を4つ並べて、最後にボタンで結果を出すだけです。",
+        ease: 4
+      },
+      type: "diagnose",
+      steps: [
+        { q: "入社したら、どう働きたい？", o: [["1つの会社で長く働きたい", { tenure: 3, salary: 1 }], ["いろいろな仕事に挑戦したい", { growth: 2, segment: 2 }]] },
+        { q: "会社に一番求めるのは？", o: [["つぶれない安心感", { equity: 3, margin: 1 }], ["これから伸びていく勢い", { growth: 3, headline: 1 }]] },
+        { q: "海外で働くことに興味は？", o: [["ある", { overseas: 3 }], ["国内がいい", { tenure: 1, equity: 1 }]] },
+        { q: "いちばん気になるのは？", o: [["お給料", { salary: 3 }], ["残業や休みなどの働きやすさ", { jobguide: 3 }], ["会社の強み・稼ぐ力", { margin: 2, segment: 1 }]] }
+      ],
+      metrics: {
+        tenure: ["平均勤続年数（と平均年齢）", "有価証券報告書・就職四季報", "平均年齢とセットで見る。平均年齢40歳なのに勤続5年なら、入れ替わりが多いかもしれません。"],
+        salary: ["平均年収（と平均年齢）", "【従業員】欄", "必ず平均年齢とセットで。持株会社（〇〇HD）は高く出やすいので注意。"],
+        growth: ["売上高成長率・営業利益成長率", "【業績】欄", "売上と利益の両方が増える「増収増益」が理想。M&Aで一気に増えることもあります。"],
+        segment: ["事業ごとの売上と利益（主力セグメント）", "【連結事業】欄", "どの部門で稼いでいるか。入りたい部門が稼ぎ頭かどうかが分かります。"],
+        equity: ["自己資本比率", "【財務】欄", "高いほど倒産しにくい。ただし銀行などの金融は仕組み上とても低いので、他の業界と比べません。"],
+        margin: ["営業利益率", "【業績】欄から計算", "本業の稼ぐ力。業界ごとに普通の水準が違うので、同じ業界の中で比べます。"],
+        overseas: ["海外売上比率", "【連結事業】欄の【海外】", "高いほど海外の仕事に関わる機会が多い可能性。為替の影響も受けやすくなります。"],
+        headline: ["記者コメントの見出し", "本文記事の【】", "【最高益】【続伸】などで、記者が業績の勢いをどう見ているかが一言で分かります。"],
+        jobguide: ["残業時間・有給休暇・3年以内の離職率", "就職四季報", "働きやすさの数字は、会社四季報ではなく就職四季報に載っています。"]
+      }
+    }
+  ];
+
+  var tabs = document.getElementById("tabs");
+  var quiz = document.getElementById("quiz");
+  var about = document.getElementById("about");
+  var state = {};
+
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  PATTERNS.forEach(function (p, i) {
+    var b = document.createElement("button");
+    b.className = "tab"; b.type = "button"; b.setAttribute("role", "tab"); b.id = "tab-" + p.id;
+    b.innerHTML = "<small>パターン " + p.id + "</small><b>" + esc(p.name) + "</b>";
+    b.addEventListener("click", function () { select(i); });
+    tabs.appendChild(b);
+  });
+
+  function select(i) {
+    tabs.querySelectorAll(".tab").forEach(function (t, j) { t.setAttribute("aria-selected", j === i ? "true" : "false"); });
+    state = { p: PATTERNS[i], n: 0, score: 0, answered: null, missed: [] };
+    renderAbout(state.p);
+    render();
+    try { localStorage.setItem("shikiho-quiz-tab", String(i)); } catch (e) {}
+  }
+
+  function renderAbout(p) {
+    var a = p.about, bars = "";
+    for (var k = 1; k <= 5; k++) bars += "<i class=\"" + (k <= a.ease ? "on" : "") + "\"></i>";
+    about.innerHTML = "<h2>" + esc(a.title) + "</h2><dl>" +
+      "<div><dt>どんな形？</dt><dd>" + esc(a.what) + "</dd></div>" +
+      "<div><dt>いいところ</dt><dd>" + esc(a.good) + "</dd></div>" +
+      "<div><dt>弱いところ</dt><dd>" + esc(a.weak) + "</dd></div>" +
+      "<div><dt>アプリへの入れやすさ <span class=\"ease\" aria-label=\"5段階中" + a.ease + "\">" + bars + "</span></dt><dd>" + esc(a.st) + "</dd></div>" +
+      "</dl>";
+  }
+
+  function header() {
+    var p = state.p, total = p.qs.length;
+    return "<div class=\"top\"><span>" + esc(p.short) + "</span><span>" + (state.n + 1) + " / " + total + "　正解 " + state.score + "</span></div>" +
+      "<div class=\"progress\"><i style=\"width:" + (state.n / total * 100) + "%\"></i></div>";
+  }
+
+  function render() {
+    var p = state.p;
+    if (p.type === "match") return renderMatch();
+    if (p.type === "diagnose") return renderDiagnose();
+    if (state.n >= p.qs.length) return renderResult();
+    var q = p.qs[state.n], ask = "", body = "";
+    function choiceList(opts) {
+      return "<div class=\"choices\">" + opts.map(function (o, k) { return "<button class=\"choice\" data-k=\"" + k + "\">" + esc(o) + "</button>"; }).join("") + "</div>";
+    }
+    if (p.type === "choice") {
+      ask = "<p class=\"question\">" + esc(q.q) + "</p>";
+      body = choiceList(q.o);
+    } else if (p.type === "persona") {
+      ask = "<div class=\"persona\"><div class=\"face\" aria-hidden=\"true\">就</div><div class=\"bubble\">" + esc(q.q) + "</div></div>";
+      body = choiceList(q.o);
+    } else if (p.type === "map") {
+      ask = "<p class=\"question\">" + esc(q.q) + "</p>";
+      body = "<div class=\"mapgrid\">" +
+        p.map.map(function (m) {
+          var cls = m[1] === 4 ? " wide4" : m[1] === 2 ? " wide2" : "";
+          return "<button class=\"choice" + cls + "\" data-k=\"" + esc(m[0]) + "\">【" + esc(m[0]) + "】</button>";
+        }).join("") + "</div><p class=\"mapnote\">※ 欄の並びはイメージです。本物の紙面の配置とは違います。</p>";
+    } else if (p.type === "ox") {
+      ask = "<div class=\"statement\">" + esc(q.q) + "</div>";
+      body = "<div class=\"ox\"><button class=\"choice\" data-k=\"true\" aria-label=\"正しい（○）\">○</button>" +
+        "<button class=\"choice\" data-k=\"false\" aria-label=\"まちがい（✕）\">✕</button></div>";
+    } else if (p.type === "vs") {
+      ask = "<p class=\"question\">" + esc(q.q) + "</p>";
+      body = "<div class=\"vs-wrap\"><table class=\"vs\"><thead><tr><th></th><th class=\"ca\">A社</th><th class=\"cb\">B社</th></tr></thead><tbody>" +
+        q.rows.map(function (r) { return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td><td>" + esc(r[2]) + "</td></tr>"; }).join("") +
+        "</tbody></table></div><div class=\"vs-choices\"><button class=\"choice\" data-k=\"0\">A社</button><button class=\"choice\" data-k=\"1\">B社</button></div>" +
+        "<p class=\"mapnote\">※ 架空の会社の数字です。</p>";
+    } else if (p.type === "calc") {
+      ask = "<p class=\"question\">" + esc(q.q) + "</p>";
+      body = "<div class=\"givens\">" +
+        q.givens.map(function (g) { return "<div><small>" + esc(g[0]) + "</small><b>" + esc(g[1]) + "</b></div>"; }).join("") +
+        "</div><div class=\"calcrow\"><input id=\"calc-in\" type=\"number\" step=\"0.1\" inputmode=\"decimal\" aria-label=\"答え（％）\" placeholder=\"例：12.5\"><span>%</span>" +
+        "<button class=\"btn\" id=\"calc-go\">答える</button></div><p class=\"mapnote\">※ 小数第1位まで（四捨五入）。架空の数字です。</p>";
+    } else if (p.type === "swipe") {
+      ask = "<p class=\"question\" style=\"font-size:15px;font-weight:500\">この見出しは？</p>";
+      body = "<div class=\"headword\">【" + esc(q.q) + "】</div><div class=\"swipe\">" +
+        p.labels.map(function (l) { return "<button class=\"choice\" data-k=\"" + l[0] + "\">" + esc(l[1]) + "</button>"; }).join("") + "</div>";
+    } else if (p.type === "case") {
+      ask = "<p class=\"question\">" + esc(q.q) + "</p>";
+      body = "<div class=\"clue\"><div class=\"ttl\">" + esc(q.clue.ttl) + "</div><table>" +
+        q.clue.rows.map(function (r) { return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td></tr>"; }).join("") +
+        "</table></div>" + choiceList(q.o);
+    }
+    // 問題文の右に「次の問題」ボタンの置き場所を作っておく（どの問題でも同じ場所に出るように）
+    var html = header() + "<div class=\"qhead\"><div class=\"qmain\"><span class=\"qtag\">" + esc(q.tag) + "</span>" + ask +
+      "</div><div class=\"qnext\" id=\"qnext\"></div></div>" + body;
+    quiz.innerHTML = html;
+    quiz.querySelectorAll(".choice").forEach(function (b) {
+      b.addEventListener("click", function () { answer(b.dataset.k); });
+    });
+    var go = document.getElementById("calc-go");
+    if (go) {
+      var inp = document.getElementById("calc-in");
+      go.addEventListener("click", function () { if (inp.value !== "") answer(inp.value); });
+      inp.addEventListener("keydown", function (e) { if (e.key === "Enter" && inp.value !== "") answer(inp.value); });
+    }
+  }
+
+  function isCorrect(q, k) {
+    var t = state.p.type;
+    if (t === "calc") return Math.abs(parseFloat(k) - q.a) <= 0.15;
+    if (t === "map" || t === "swipe") return k === q.a;
+    if (t === "ox") return (k === "true") === q.a;
+    return Number(k) === q.a;
+  }
+
+  function answer(k) {
+    var q = state.p.qs[state.n], ok = isCorrect(q, k);
+    if (ok) state.score++; else state.missed.push(q);
+    quiz.querySelectorAll(".choice").forEach(function (b) {
+      b.disabled = true;
+      if (isCorrect(q, b.dataset.k)) b.classList.add("correct");
+      else if (b.dataset.k === k) b.classList.add("wrong");
+    });
+    quiz.querySelectorAll("#calc-in, #calc-go").forEach(function (el) { el.disabled = true; });
+    if (q.memo) state.memo = (state.memo || []).concat([q.memo]);
+    var last = state.n === state.p.qs.length - 1;
+    var fb = document.createElement("div");
+    fb.className = "feedback" + (ok ? "" : " ng");
+    var head = ok ? "正解！" : "おしい！";
+    if (state.p.type === "calc") head += "（あなたの答え：" + esc(k) + "% ／ 正解：" + q.a.toFixed(1) + "%）";
+    fb.innerHTML = "<div class=\"head\">" + head + "</div><p>" + esc(q.ex) + "</p>" +
+      "<div class=\"where\">見る場所：<span>" + esc(q.where) + "</span></div>";
+    quiz.appendChild(fb);
+    document.getElementById("qnext").innerHTML = "<button class=\"btn\" id=\"next\">" + (last ? "結果を見る" : "次へ →") + "</button>";
+    var nx = document.getElementById("next");
+    nx.addEventListener("click", function () { state.n++; render(); });
+    nx.focus({ preventScroll: true });
+  }
+
+  function renderResult() {
+    var p = state.p, total = p.qs.length, s = state.score;
+    var msg = s === total ? "全問正解！四季報を開いても迷わずに探せそうです。" :
+              s >= total - 1 ? "あと少し。間違えたところだけ、下で見直しましょう。" :
+              "下の「見る場所」だけ覚えておけば大丈夫です。";
+    var review = state.missed.length ? "<div class=\"review\">" + state.missed.map(function (q) {
+      return "<div><b>" + esc(q.tag) + "</b><span class=\"where\">見る場所：<span>" + esc(q.where) + "</span></span></div>";
+    }).join("") + "</div>" : "";
+    var memo = (p.type === "case" && state.memo) ? "<div class=\"memo\"><h3>🔎 調査メモ（架空の会社）</h3><ul>" +
+      state.memo.map(function (m) { return "<li>" + esc(m) + "</li>"; }).join("") +
+      "</ul></div>" : "";
+    quiz.innerHTML = "<div class=\"top\"><span>" + esc(p.short) + "</span><span>おわり</span></div>" +
+      "<div class=\"progress\"><i style=\"width:100%\"></i></div>" +
+      "<div class=\"result\"><div class=\"big\">" + s + " / " + total + "</div><p class=\"msg\">" + msg + "</p>" + memo + review +
+      "<button class=\"btn ghost\" id=\"again\">もう一度</button></div>";
+    document.getElementById("again").addEventListener("click", function () { restart(); });
+  }
+
+  function restart() { state = { p: state.p, n: 0, score: 0, answered: null, missed: [] }; render(); }
+
+  // ---- I. ペア合わせ ----
+  function shuffle(a) {
+    a = a.slice();
+    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+    return a;
+  }
+  function renderMatch() {
+    var p = state.p;
+    if (!state.m) state.m = { left: shuffle(p.pairs.map(function (x) { return x[0]; })), right: shuffle(p.pairs.map(function (x) { return x[1]; })), sel: null, done: {}, miss: 0 };
+    var m = state.m, total = p.pairs.length, doneN = Object.keys(m.done).length;
+    var answerOf = {};
+    p.pairs.forEach(function (x) { answerOf[x[0]] = x[1]; });
+    if (doneN === total) {
+      quiz.innerHTML = "<div class=\"top\"><span>" + esc(p.short) + "</span><span>おわり</span></div><div class=\"progress\"><i style=\"width:100%\"></i></div>" +
+        "<div class=\"result\"><div class=\"big\">ミス " + m.miss + "回</div><p class=\"msg\">" +
+        (m.miss === 0 ? "ノーミス！欄の場所は完ぺきです。" : m.miss <= 3 ? "いい調子です。もう一度やると、もっと速くなります。" : "くり返すうちに覚えられます。もう一度どうぞ。") +
+        "</p><div class=\"review\">" + p.pairs.map(function (x) { return "<div><b>" + esc(x[0]) + "</b><span class=\"where\">見る場所：<span>【" + esc(x[1]) + "】</span></span></div>"; }).join("") +
+        "</div><button class=\"btn ghost\" id=\"again\">もう一度</button></div>";
+      document.getElementById("again").addEventListener("click", function () { state.m = null; renderMatch(); });
+      return;
+    }
+    var doneRight = {};
+    Object.keys(m.done).forEach(function (l) { doneRight[answerOf[l]] = true; });
+    quiz.innerHTML = "<div class=\"top\"><span>" + esc(p.short) + "</span><span>" + doneN + " / " + total + " ペア　ミス " + m.miss + "</span></div>" +
+      "<div class=\"progress\"><i style=\"width:" + (doneN / total * 100) + "%\"></i></div>" +
+      "<p class=\"question\" style=\"font-size:16px\">" + (m.sel ? "「" + esc(m.sel) + "」はどの欄？右から選んでください" : "左の情報を1つ選んでください") + "</p>" +
+      "<div class=\"match\"><div class=\"col\"><small>知りたい情報</small>" +
+      m.left.map(function (l) {
+        var done = m.done[l];
+        return "<button class=\"choice" + (done ? " correct" : "") + (m.sel === l ? " sel" : "") + "\" data-side=\"L\" data-k=\"" + esc(l) + "\"" + (done ? " disabled" : "") + ">" + esc(l) + "</button>";
+      }).join("") + "</div><div class=\"col\"><small>欄</small>" +
+      m.right.map(function (r) {
+        var done = doneRight[r];
+        return "<button class=\"choice" + (done ? " correct" : "") + "\" data-side=\"R\" data-k=\"" + esc(r) + "\"" + (done ? " disabled" : "") + ">【" + esc(r) + "】</button>";
+      }).join("") + "</div></div>";
+    quiz.querySelectorAll(".choice").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (b.dataset.side === "L") { m.sel = b.dataset.k; renderMatch(); return; }
+        if (!m.sel) return;
+        if (answerOf[m.sel] === b.dataset.k) { m.done[m.sel] = true; m.sel = null; renderMatch(); }
+        else { m.miss++; b.classList.add("shake"); setTimeout(function () { renderMatch(); }, 450); }
+      });
+    });
+  }
+
+  // ---- J. 自分診断 ----
+  function renderDiagnose() {
+    var p = state.p;
+    if (!state.d) state.d = { answers: [] };
+    var d = state.d, total = p.steps.length, n = d.answers.length;
+    if (n === total) {
+      var score = {}, order = Object.keys(p.metrics);
+      d.answers.forEach(function (w) { Object.keys(w).forEach(function (k) { score[k] = (score[k] || 0) + w[k]; }); });
+      var top = order.filter(function (k) { return score[k]; })
+        .sort(function (a, b) { return (score[b] - score[a]) || (order.indexOf(a) - order.indexOf(b)); }).slice(0, 3);
+      quiz.innerHTML = "<div class=\"top\"><span>" + esc(p.short) + "</span><span>診断結果</span></div><div class=\"progress\"><i style=\"width:100%\"></i></div>" +
+        "<p class=\"question\" style=\"font-size:17px\">あなたが最初に見るといい数字</p><div class=\"rec\">" +
+        top.map(function (k, i) {
+          var m = p.metrics[k];
+          return "<div><span class=\"rank\">" + (i + 1) + "番目</span><b>" + esc(m[0]) + "</b><span class=\"where\">見る場所：<span>" + esc(m[1]) + "</span></span><p>" + esc(m[2]) + "</p></div>";
+        }).join("") + "</div><div class=\"row\" style=\"justify-content:center\"><button class=\"btn ghost\" id=\"again\">もう一度診断する</button></div>";
+      document.getElementById("again").addEventListener("click", function () { state.d = null; renderDiagnose(); });
+      return;
+    }
+    var st = p.steps[n];
+    quiz.innerHTML = "<div class=\"top\"><span>" + esc(p.short) + "</span><span>" + (n + 1) + " / " + total + "</span></div>" +
+      "<div class=\"progress\"><i style=\"width:" + (n / total * 100) + "%\"></i></div>" +
+      "<span class=\"qtag\">正解はありません</span><p class=\"question\">" + esc(st.q) + "</p><div class=\"choices\">" +
+      st.o.map(function (o, k) { return "<button class=\"choice\" data-k=\"" + k + "\">" + esc(o[0]) + "</button>"; }).join("") + "</div>";
+    quiz.querySelectorAll(".choice").forEach(function (b) {
+      b.addEventListener("click", function () { d.answers.push(st.o[Number(b.dataset.k)][1]); renderDiagnose(); });
+    });
+  }
+
+  var start = 0;
+  try { var saved = parseInt(localStorage.getItem("shikiho-quiz-tab"), 10); if (saved >= 0 && saved < PATTERNS.length) start = saved; } catch (e) {}
+  select(start);
+})();
+</script>
+
+</html>

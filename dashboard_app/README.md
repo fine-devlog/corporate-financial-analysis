@@ -24,6 +24,7 @@ EDINET API ──(edinet_ingest.py：毎日 GitHub Actions)──▶ Supabase (P
 | `quiz_bank.py` | 四季報クイズの問題と、出題する問題の選び方 |
 | `ai_summary.py` | 有報の文章の AI 要約（Claude / OpenAI 切り替え） |
 | `supabase_schema.sql` | テーブル・行レベルセキュリティ（RLS）・権限の定義 |
+| `quiz_prototype/` | 四季報クイズを本体に入れる前に作った10パターンの試作と、検討の記録（本体からは使っていない） |
 | `tests/` | pytest によるテスト（ネットワーク不要） |
 
 ## 使い方

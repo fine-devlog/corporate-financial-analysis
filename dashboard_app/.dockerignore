@@ -13,3 +13,4 @@ tests/
 Dockerfile
 compose.yaml
 .dockerignore
+quiz_prototype/
