@@ -1,3 +1,4 @@
+import colorsys
 import hmac
 import random
 import re
@@ -1532,7 +1533,7 @@ def choose_company(index, display_df: pd.DataFrame, industry: str):
     st.toast(f"「{company_row['企業名']}」を選びました。下の比較結果とグラフで確認できます。")
 
 
-def render_metric_chart(display_df: pd.DataFrame, thresholds: dict):
+def render_metric_chart(display_df: pd.DataFrame, thresholds: dict, all_mode: bool = False):
     st.subheader("指標比較グラフ")
     usable, skipped = chartable_metrics(display_df)
     if not usable:
@@ -1545,7 +1546,7 @@ def render_metric_chart(display_df: pd.DataFrame, thresholds: dict):
     selected = st.session_state.get("selected_company")
     top_n = 30
 
-    plot_df = display_df[["企業名", metric_to_plot]].copy()
+    plot_df = display_df[["企業名", metric_to_plot, "主業種"]].copy()
     plot_df[metric_to_plot] = pd.to_numeric(plot_df[metric_to_plot], errors="coerce")
     plot_df = plot_df.dropna(subset=[metric_to_plot]).sort_values(metric_to_plot, ascending=False)
     if plot_df.empty:
@@ -1556,14 +1557,15 @@ def render_metric_chart(display_df: pd.DataFrame, thresholds: dict):
     shown = plot_df.head(top_n)
     if selected and selected not in set(shown["企業名"]):
         shown = pd.concat([shown, plot_df[plot_df["企業名"] == selected]])
-    shown = shown.assign(
-        区分=["選択中の企業" if n == selected else "その他" for n in shown["企業名"]],
-        表示名=short_company_labels(shown["企業名"]),
-    )
+    shown = chart_colors(shown.assign(表示名=short_company_labels(shown["企業名"])), selected, all_mode)
     st.caption(f"{len(plot_df)}社中、上位{min(top_n, len(plot_df))}社" + ("＋選択中の企業" if selected else "") + "を表示")
+    if all_mode:
+        st.caption("🎨 棒の色は業界です。どの業界がこの指標の上位に多いかが分かります。"
+                   + ("黒い枠の棒が、選択中の企業です。" if selected else ""))
 
-    st.caption("👆 棒にカーソルを合わせると色が変わり、クリックするとその企業を選べます。")
-    st.altair_chart(build_metric_chart(shown, metric_to_plot, thresholds.get(metric_to_plot), is_mobile_device()),
+    st.caption("👆 棒にカーソルを合わせると、その棒の色の補色に変わります。クリックするとその企業を選べます。")
+    st.altair_chart(build_metric_chart(shown, metric_to_plot, thresholds.get(metric_to_plot), is_mobile_device(),
+                                       all_mode),
                     width="stretch", key="metric_chart",
                     on_select="rerun", selection_mode=[ui_events.CHART_PICK_PARAM])
 
@@ -1577,46 +1579,88 @@ def short_company_labels(names: pd.Series) -> list:
 
 
 BAR_HEIGHT_PX = 26  # スマホの横棒グラフで1社あたりの高さ
-HOVER_COLOR = "#F28E2B"  # カーソルを合わせた棒の色（選択中の赤・その他の青と区別できるオレンジ）
+SELECTED_COLOR = "#d62728"  # 業界ごとのグラフで、選択中の企業（赤）
+OTHER_COLOR = "#4C72B0"     # 業界ごとのグラフで、その他の企業（青）
+# 全業界のグラフで使う、業界ごとの色（16業界を見分けやすいように、灰色は使わない）
+INDUSTRY_COLORS = dict(zip(INDUSTRIES, [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#393b79",
+    "#bcbd22", "#17becf", "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", "#c49c94",
+]))
+UNKNOWN_INDUSTRY_COLOR = "#9e9e9e"
 
 
-def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool) -> alt.LayerChart:
-    """指標比較グラフ。パソコンは縦棒、スマホは画面幅いっぱいの横棒（社名が読めるように）。"""
+def complementary_color(hex_color: str) -> str:
+    """補色（色相を180度回した色。明るさ・鮮やかさは同じ）。灰色のように色味が無い色は、白か黒にする。"""
+    r, g, b = (int(hex_color.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    h, lightness, saturation = colorsys.rgb_to_hls(r, g, b)
+    if saturation < 0.15:
+        return "#111111" if lightness > 0.5 else "#eeeeee"
+    r, g, b = colorsys.hls_to_rgb((h + 0.5) % 1.0, lightness, saturation)
+    return "#{:02x}{:02x}{:02x}".format(*(round(c * 255) for c in (r, g, b)))
+
+
+def chart_colors(shown: pd.DataFrame, selected, all_mode: bool) -> pd.DataFrame:
+    """棒ごとの「凡例（色分けの名前）」「色」「補色（カーソルを載せたときの色）」「選択中」を付ける。"""
+    if all_mode:
+        legend = [m if m in INDUSTRY_COLORS else "不明" for m in shown["主業種"]]
+        colors = [INDUSTRY_COLORS.get(m, UNKNOWN_INDUSTRY_COLOR) for m in legend]
+    else:
+        legend = ["選択中の企業" if n == selected else "その他" for n in shown["企業名"]]
+        colors = [SELECTED_COLOR if x == "選択中の企業" else OTHER_COLOR for x in legend]
+    return shown.assign(凡例=legend, 色=colors, 補色=[complementary_color(c) for c in colors],
+                        選択中=[bool(selected) and n == selected for n in shown["企業名"]])
+
+
+def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool,
+                       all_mode: bool = False) -> alt.LayerChart:
+    """指標比較グラフ。パソコンは縦棒、スマホは画面幅いっぱいの横棒（社名が読めるように）。
+
+    【変更】カーソルを載せた棒を、その棒の色の補色にする。
+      グラフの仕組み（Vega-Lite）では「棒ごとの色」と「カーソル時の棒ごとの色」を1つの棒に同時に指定できないため、
+      同じ棒を2枚重ね、上の棒（補色）をカーソルが載ったときだけ見せる。クリックやカーソルは上の棒で受け取る。
+    """
     order = shown["表示名"].tolist()
-    # 【追加】カーソルを合わせた棒をオレンジにする（どこを見ているか分かるように）／クリックで企業を選ぶ
     hover = alt.selection_point(name=ui_events.CHART_HOVER_PARAM, on="pointerover", clear="pointerout",
                                 fields=["企業名"], empty=False)
     pick = alt.selection_point(name=ui_events.CHART_PICK_PARAM, on="click", fields=["企業名"])
-    color = alt.condition(
-        hover,
-        alt.value(HOVER_COLOR),
-        alt.Color(
-            "区分:N",
-            scale=alt.Scale(domain=["選択中の企業", "その他"], range=["#d62728", "#4C72B0"]),
-            legend=alt.Legend(title=None, orient="top"),
-        ),
-    )
+
+    pairs = shown[["凡例", "色"]].drop_duplicates()
+    if all_mode:  # 凡例は業界の番号順
+        pairs = pairs.assign(_o=[INDUSTRIES.index(x) if x in INDUSTRIES else 99 for x in pairs["凡例"]]).sort_values("_o")
+        legend = alt.Legend(title="業界", orient="bottom", columns=2 if mobile else 4, labelLimit=200)
+    else:
+        legend = alt.Legend(title=None, orient="top")
+    base_color = alt.Color("凡例:N", scale=alt.Scale(domain=pairs["凡例"].tolist(), range=pairs["色"].tolist()),
+                           legend=legend)
     tooltip = [alt.Tooltip("企業名:N"), alt.Tooltip(f"{metric}:Q")]
+    if all_mode:
+        tooltip.insert(1, alt.Tooltip("凡例:N", title="業界"))
+
     if mobile:
         # 【追加】スマホは画面が縦長なので横棒にし、社名を縦に並べる
-        bars = alt.Chart(shown).mark_bar().encode(
-            y=alt.Y("表示名:N", sort=order, title=None, axis=alt.Axis(labelLimit=150)),
-            x=alt.X(f"{metric}:Q", title=metric),
-            color=color, tooltip=tooltip,
-        )
+        position = {"y": alt.Y("表示名:N", sort=order, title=None, axis=alt.Axis(labelLimit=150)),
+                    "x": alt.X(f"{metric}:Q", title=metric)}
         rule_encoding = {"x": "業界中央値:Q"}
         height = max(240, BAR_HEIGHT_PX * len(shown))
     else:
-        bars = alt.Chart(shown).mark_bar().encode(
-            # labelOverlap=False：実際のブラウザ幅だと重なりを避けて社名が間引かれていたため、全社表示する
-            x=alt.X("表示名:N", sort=order, title="企業名",
-                    axis=alt.Axis(labelAngle=-60, labelOverlap=False, labelLimit=120)),
-            y=alt.Y(f"{metric}:Q", title=metric),
-            color=color, tooltip=tooltip,
-        )
+        # labelOverlap=False：実際のブラウザ幅だと重なりを避けて社名が間引かれていたため、全社表示する
+        position = {"x": alt.X("表示名:N", sort=order, title="企業名",
+                               axis=alt.Axis(labelAngle=-60, labelOverlap=False, labelLimit=120)),
+                    "y": alt.Y(f"{metric}:Q", title=metric)}
         rule_encoding = {"y": "業界中央値:Q"}
         height = 400
-    layers = [bars.mark_bar(cursor="pointer").add_params(hover, pick)]
+
+    base_encoding = {"color": base_color, "tooltip": tooltip, **position}
+    if all_mode:  # 全業界では色が業界を表すので、選択中の企業は黒い枠で示す
+        base_encoding["stroke"] = alt.condition("datum['選択中']", alt.value("#111111"), alt.value("transparent"))
+        base_encoding["strokeWidth"] = alt.condition("datum['選択中']", alt.value(3), alt.value(0))
+    bars = alt.Chart(shown).mark_bar().encode(**base_encoding)
+    hover_bars = alt.Chart(shown).mark_bar(cursor="pointer").encode(
+        color=alt.Color("補色:N", scale=None, legend=None),
+        opacity=alt.condition(hover, alt.value(1), alt.value(0)),
+        tooltip=tooltip, **position,
+    ).add_params(hover, pick)
+    layers = [bars, hover_bars]
     if baseline is not None:
         layers.append(
             alt.Chart(pd.DataFrame({"業界中央値": [baseline]}))
@@ -1626,10 +1670,28 @@ def build_metric_chart(shown: pd.DataFrame, metric: str, baseline, mobile: bool)
     return alt.layer(*layers).properties(height=height)
 
 
+def switch_industry_from_page():
+    """企業データ画面の「業界を切り替える」で選び直したとき（業界選択の画面に戻らなくていいように）。"""
+    choice = st.session_state.get("industry_switch")
+    industry = ALL_INDUSTRIES if choice == ALL_INDUSTRIES_OPTION else choice
+    if industry and industry != st.session_state.get("selected_industry"):
+        reset_analysis_state()
+        st.session_state["selected_industry"] = industry
+
+
+def render_industry_switch(industry: str):
+    options = [ALL_INDUSTRIES_OPTION, *INDUSTRIES]
+    # 業界選択の画面で選び直したときにも、表示がずれないように毎回いまの業界に合わせる
+    st.session_state["industry_switch"] = ALL_INDUSTRIES_OPTION if industry == ALL_INDUSTRIES else industry
+    st.selectbox("業界を切り替える", options, key="industry_switch", on_change=switch_industry_from_page,
+                 help="選び直すと、その業界の企業データに切り替わります（比較結果はリセットされます）。")
+
+
 def page_company_data():
     industry = st.session_state["selected_industry"]
     all_mode = industry == ALL_INDUSTRIES
     st.title(f"【{industry_label(industry)}】企業データ")
+    render_industry_switch(industry)
     if all_mode:
         st.caption("全上場企業をまとめて表示しています。「区分」の列は各企業の業界、基準値は全業界の中央値です。")
 
@@ -1740,7 +1802,7 @@ def page_company_data():
         st.caption(f"企業データスコア：{st.session_state['company_score_pct']:.0f}%（-100〜100の範囲）")
         st.button("🎯 結果の見方をクイズで勉強する", key="quiz_from_company_data", on_click=open_quiz_home)
 
-    render_metric_chart(display_df, thresholds)
+    render_metric_chart(display_df, thresholds, all_mode)
 
     if st.button("次へ", type="primary", disabled=not st.session_state["comparison_result"]):
         goto("reporter_comment")

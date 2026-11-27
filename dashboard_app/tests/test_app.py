@@ -459,12 +459,14 @@ def test_back_to_top_button_on_every_page(make_app):
 def test_chart_has_hover_and_click(make_app):
     at = make_app("company_data", selected_industry="9.輸送用機器")
     spec = _vega_specs(at)[0]
-    bars = spec["layer"][0]
-    # 重ねたグラフでは、Altair は選択の定義を一番上に移し、どの層に効くかを views で指定する
+    base, top = spec["layer"][0], spec["layer"][1]
+    # 同じ棒を2枚重ね、上の棒（補色）をカーソルが載ったときだけ見せる。カーソルとクリックは上の棒で受け取る
     params = {p["name"]: p.get("views", []) for p in spec.get("params", [])}
-    assert bars["name"] in params["hover"] and bars["name"] in params["pick"]
-    assert bars["encoding"]["color"]["condition"]["value"] == "#F28E2B"  # カーソルを合わせた棒はオレンジ
-    assert bars["mark"]["cursor"] == "pointer"
+    assert top["name"] in params["hover"] and top["name"] in params["pick"]
+    assert top["encoding"]["color"]["field"] == "補色"
+    assert top["encoding"]["opacity"]["condition"]["value"] == 1 and top["encoding"]["opacity"]["value"] == 0
+    assert top["mark"]["cursor"] == "pointer"
+    assert base["encoding"]["color"]["scale"]["domain"] == ["選択中の企業", "その他"] or         base["encoding"]["color"]["scale"]["domain"] == ["その他"]
 
 
 def test_smooth_scroll_helpers_installed(make_app):
@@ -669,3 +671,41 @@ def test_quiz_button_after_comparison(make_app):
     click(at, "この企業を業界と比較する")
     at.button(key="quiz_from_company_data").click().run()
     assert at.session_state["page"] == "quiz"
+
+
+def test_complementary_color():
+    import ast
+    import colorsys
+    # analysis02 は読み込むとアプリが動くので、関数だけを取り出して確かめる
+    tree = ast.parse(Path(APP).read_text(encoding="utf-8"))
+    func = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "complementary_color")
+    ns = {"colorsys": colorsys}
+    exec(compile(ast.Module(body=[func], type_ignores=[]), APP, "exec"), ns)
+    comp = ns["complementary_color"]
+    assert comp("#ff0000") == "#00ffff"
+    assert comp("#4C72B0") != "#4C72B0"
+    assert comp("#9e9e9e") in ("#111111", "#eeeeee")  # 灰色は白か黒
+
+
+def test_all_industries_chart_colored_by_industry(make_app):
+    import streamlit as st
+    st.cache_data.clear()  # ほかのテストで読み込んだ「全業界」のデータが残らないように
+    at = make_app("company_data", selected_industry="全業界")
+    spec = _vega_specs(at)[0]
+    base = spec["layer"][0]
+    color = base["encoding"]["color"]
+    assert color["field"] == "凡例" and color["legend"]["title"] == "業界"
+    assert "2.IT・ソフト・SI" in color["scale"]["domain"]
+    assert spec["layer"][1]["encoding"]["color"]["field"] == "補色"
+    assert "stroke" in base["encoding"]  # 選択中の企業は黒い枠
+
+
+def test_switch_industry_on_company_page(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    at.selectbox(key="industry_switch").set_value("🌐 全企業（業界を問わずまとめて見る）").run()
+    assert not at.exception
+    assert at.session_state["selected_industry"] == "全業界"
+    assert any("【全業界】" in t.value for t in at.title)
+    at.selectbox(key="industry_switch").set_value("2.IT・ソフト・SI").run()
+    assert at.session_state["selected_industry"] == "2.IT・ソフト・SI"
+    assert at.selectbox(key="industry_switch").value == "2.IT・ソフト・SI"
