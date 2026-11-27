@@ -14,6 +14,7 @@ from supabase import create_client, Client
 
 import ai_summary
 import company_names
+import quiz_bank
 import shikiho_guide
 import ui_events
 
@@ -1180,7 +1181,7 @@ def page_title():
             except Exception:
                 pass
             # クライアントごと破棄し、管理者認証状態もリセットする
-            for k in ["supabase", "auth_user", "is_admin_authed", "admin_attempts"]:
+            for k in ["supabase", "auth_user", "is_admin_authed", "admin_attempts", *QUIZ_STATE_KEYS]:
                 st.session_state.pop(k, None)
             reset_analysis_state()
             st.session_state["page"] = "title"
@@ -1225,40 +1226,44 @@ AIによる要約は、事実と異なる内容や重要な情報の抜け落ち
         st.write("「理解した」ボタンを押してください。")
 
 
-VIEW_MODES = {
-    "by_industry": ("🏭 業界ごとに見る",
-                    "同じ業界の企業だけを並べ、業界の中央値と比べます。志望業界が決まっているときに。"),
-    "all": ("🌐 全業界まとめて見る",
-            "業界を問わず全上場企業を並べ、全体の中央値と比べます。業界を決める前の比較や、"
-            "社名から探したいときに。業界ごとに水準が違うので、評価は目安として見てください。"),
+MENU_ITEMS = {
+    "company": ("📊 企業データを見る",
+                "業界を選んで（全企業まとめても可）、企業の数字を業界の中央値と比べます。"),
+    "quiz": ("🎯 四季報と企業データに関するクイズをする",
+             "四季報のどこを見ればいいか、数字をどう読むかを、1回5問のクイズで覚えます。解いた記録が残ります。"),
 }
 
 
 def page_view_mode():
-    """【追加】業界選択の前に、業界ごとに見るか、全業界まとめて見るかを選ぶ。"""
-    st.title("見方を選んでください")
-    current = "all" if st.session_state.get("selected_industry") == ALL_INDUSTRIES else None
-    for mode, (title, description) in VIEW_MODES.items():
+    """【変更】免責事項の次に、企業データを見るか、クイズをするかを選ぶ。"""
+    st.title("何をしますか？")
+    for key, (title, description) in MENU_ITEMS.items():
         with st.container(border=True):
             st.subheader(title)
             st.write(description)
-            if st.button("こちらで見る", key=f"view_mode_{mode}", type="primary" if mode == current else "secondary"):
-                if mode == "by_industry":
+            if st.button("こちらへ", key=f"menu_{key}", type="primary" if key == "company" else "secondary"):
+                if key == "company":
                     goto("industry_select")
-                if st.session_state.get("selected_industry") != ALL_INDUSTRIES:
-                    reset_analysis_state()
-                st.session_state["selected_industry"] = ALL_INDUSTRIES
-                goto("company_data")
+                open_quiz()
+
+
+ALL_INDUSTRIES_OPTION = "🌐 全企業（業界を問わずまとめて見る）"
 
 
 def page_industry_select():
     st.title("業界を選択してください")
-    if st.button("← 見方の選択に戻る"):
+    if st.button("← 前の画面に戻る"):
         goto("view_mode")
     current = st.session_state.get("selected_industry")
-    index = INDUSTRIES.index(current) if current in INDUSTRIES else None
-    industry = st.selectbox("業界", INDUSTRIES, index=index, placeholder="選択してください")
-    if st.button("次へ", disabled=(industry is None)):
+    # 【変更】16業界に加えて、全企業をまとめて見る選択肢を先頭に置く
+    options = [ALL_INDUSTRIES_OPTION, *INDUSTRIES]
+    current_option = ALL_INDUSTRIES_OPTION if current == ALL_INDUSTRIES else current
+    index = options.index(current_option) if current_option in options else None
+    choice = st.selectbox("業界", options, index=index, placeholder="選択してください")
+    if choice == ALL_INDUSTRIES_OPTION:
+        st.caption("全上場企業を並べ、全体の中央値と比べます。業界ごとに水準が違うので、評価は目安として見てください。")
+    if st.button("次へ", disabled=(choice is None)):
+        industry = ALL_INDUSTRIES if choice == ALL_INDUSTRIES_OPTION else choice
         # 業界が変わったら前の比較結果などをクリアする
         if industry != current:
             reset_analysis_state()
@@ -1634,7 +1639,7 @@ def page_company_data():
     if display_df.empty:
         st.warning("この業界のデータはまだ準備中です。他の業界をお試しください。")
         if st.button("業界選択に戻る"):
-            goto("view_mode" if all_mode else "industry_select")
+            goto("industry_select")
         return
 
     thresholds = calculate_industry_threshold(industry)
@@ -1733,6 +1738,7 @@ def page_company_data():
         if st.session_state.get("segment_note"):
             st.caption(st.session_state["segment_note"])
         st.caption(f"企業データスコア：{st.session_state['company_score_pct']:.0f}%（-100〜100の範囲）")
+        st.button("🎯 結果の見方をクイズで勉強する", key="quiz_from_company_data", on_click=open_quiz_home)
 
     render_metric_chart(display_df, thresholds)
 
@@ -1982,6 +1988,7 @@ def page_result():
         st.write(f"「{company}」は{industry_label(industry)}では「横ばい予想」でしょう。")
 
     render_ai_summary_section(company)
+    st.button("🎯 結果の見方をクイズで勉強する", key="quiz_from_result", on_click=open_quiz_home)
 
     viewer = is_viewer()
     if viewer:
@@ -2084,6 +2091,9 @@ def render_sidebar_guide():
 
 def page_help():
     st.title("就活目的での四季報の読み方・指標のコツ")
+    with st.container(border=True):
+        st.write("🎯 読むのが大変なら、**クイズ**で覚えるのがおすすめです（1回5問・解いた記録が残ります）。")
+        st.button("クイズに挑戦する", key="help_to_quiz", on_click=open_quiz_home)
     tab_metrics, tab_where, tab_video, tab_image, tab_text, tab_dict = st.tabs(
         ["📊 指標の見方", "📍 四季報のどこを見る？", "🎥 動画で見る", "🖼️ 図解で見る", "📝 テキストで見る", "📖 見出し辞書"]
     )
@@ -2170,7 +2180,7 @@ def page_help():
     if st.button("戻る"):
         # 【修正】help→help のように戻り先が自分自身になって抜けられなくなるのを防ぐ
         back = st.session_state["prev_page"]
-        goto(back if back != "help" else "title")
+        goto(back if back not in ("help", "quiz") else "title")
 
 
 def page_admin():
@@ -2269,6 +2279,272 @@ def page_admin():
         goto("title")
 
 
+# ---------------------------------------------------------------------------
+# 四季報クイズ（ヘルプの内容をクイズで覚える）
+#   問題と出題の選び方は quiz_bank.py。ここは画面と、解いた記録の読み書き。
+#   記録はログインした人ごとに Supabase の quiz_answers に保存する（閲覧専用アカウントは保存しない）。
+# ---------------------------------------------------------------------------
+QUIZ_STATE_KEYS = ["quiz_history", "quiz_history_owner", "quiz_storage_note",
+                   "quiz_set", "quiz_pos", "quiz_given", "quiz_mode", "quiz_nonce", "quiz_return"]
+QUIZ_SET_SIZE = 5
+QUIZ_ANCHOR_ID = "quiz-question-top"
+QUIZ_HISTORY_LIMIT = 5000
+
+
+def open_quiz():
+    """クイズのトップ画面へ移る（戻るボタンで、今いる画面に帰ってこられるようにしておく）。"""
+    st.session_state["quiz_return"] = st.session_state.get("page", "title")
+    end_quiz()
+    goto("quiz")
+
+
+def open_quiz_home():
+    """ボタンの on_click 用（コールバックの中では st.rerun できないので、ページだけ切り替える）。"""
+    st.session_state["quiz_return"] = st.session_state.get("page", "title")
+    end_quiz()
+    st.session_state["prev_page"] = st.session_state.get("page", "title")
+    st.session_state["page"] = "quiz"
+
+
+def load_quiz_history() -> list:
+    """解いた記録（古い順）。ログインした人ごとに最初の1回だけ読み、あとは session_state に持つ。
+
+    クイズの種類を切り替えても記録は消えない。閲覧専用アカウントは保存しないので、画面を開いている間だけ残る。
+    """
+    user = st.session_state.get("auth_user")
+    owner = getattr(user, "id", None) or getattr(user, "email", None)
+    if st.session_state.get("quiz_history_owner") != owner:
+        rows, note = [], None
+        if is_viewer():
+            note = "viewer"
+        else:
+            try:
+                rows = (get_supabase().table("quiz_answers").select("question_id,correct,answered_at")
+                        .order("answered_at").range(0, QUIZ_HISTORY_LIMIT - 1).execute().data) or []
+            except Exception:
+                note = "unavailable"  # 表がまだ無いなど。画面を開いている間だけ記録する
+        st.session_state["quiz_history"] = list(rows)
+        st.session_state["quiz_history_owner"] = owner
+        st.session_state["quiz_storage_note"] = note
+    return st.session_state["quiz_history"]
+
+
+def record_quiz_answer(question_id: str, correct: bool):
+    st.session_state["quiz_history"].append(
+        {"question_id": question_id, "correct": bool(correct), "answered_at": datetime.now(timezone.utc).isoformat()})
+    if st.session_state.get("quiz_storage_note"):
+        return
+    try:
+        # user_id は DB 側で auth.uid() が入る（他人の記録として書くことはできない）
+        get_supabase().table("quiz_answers").insert({"question_id": question_id, "correct": bool(correct)}).execute()
+    except Exception:
+        st.session_state["quiz_storage_note"] = "unavailable"
+
+
+def start_quiz(mode: str):
+    st.session_state["quiz_set"] = quiz_bank.pick_questions(load_quiz_history(), mode, n=QUIZ_SET_SIZE)
+    st.session_state["quiz_pos"] = 0
+    st.session_state["quiz_given"] = {}
+    st.session_state["quiz_mode"] = mode
+    st.session_state["quiz_nonce"] = st.session_state.get("quiz_nonce", 0) + 1
+
+
+def end_quiz():
+    for k in ["quiz_set", "quiz_pos", "quiz_given", "quiz_mode"]:
+        st.session_state.pop(k, None)
+
+
+def answer_quiz(question_id: str, answer):
+    given = st.session_state["quiz_given"]
+    if question_id in given:
+        return  # 同じ問題に2回答えない
+    given[question_id] = answer
+    st.session_state["quiz_scroll"] = True  # 答えたら、問題文（解説と「次へ」）の位置まで戻す
+    record_quiz_answer(question_id, quiz_bank.check_answer(quiz_bank.BY_ID[question_id], answer))
+
+
+def answer_quiz_calc(question_id: str, input_key: str):
+    value = st.session_state.get(input_key)
+    if value is not None:
+        answer_quiz(question_id, value)
+
+
+def next_quiz():
+    st.session_state["quiz_pos"] += 1
+
+
+def quiz_choice_buttons(q: dict, labels: list, values: list, ncols: int = 1):
+    """選択肢のボタン。答えたあとは、正解に ✅・自分の答えに ❌ を付けて押せなくする。"""
+    given = st.session_state["quiz_given"]
+    answered = q["id"] in given
+    cols = st.columns(ncols) if ncols > 1 else None
+    for i, (label, value) in enumerate(zip(labels, values)):
+        mark = ""
+        if answered:
+            if quiz_bank.check_answer(q, value):
+                mark = "✅ "
+            elif given[q["id"]] == value:
+                mark = "❌ "
+        (cols[i % ncols] if cols else st).button(
+            mark + label, key=f"quiz_opt_{st.session_state['quiz_nonce']}_{q['id']}_{i}", width="stretch",
+            disabled=answered, on_click=answer_quiz, args=(q["id"], value))
+
+
+def render_quiz_feedback(q: dict):
+    given = st.session_state["quiz_given"][q["id"]]
+    ok = quiz_bank.check_answer(q, given)
+    head = "⭕ 正解！" if ok else f"❌ おしい！ 正解は「{quiz_bank.correct_text(q)}」"
+    if q["type"] == "calc":
+        head += f"（あなたの答え：{given:g}%）"
+    text = f"**{head}**\n\n{q['explain']}\n\n📍 見る場所：**{q['where']}**"
+    (st.success if ok else st.error)(text)
+
+
+def render_quiz_question():
+    ids = st.session_state["quiz_set"]
+    pos = st.session_state["quiz_pos"]
+    q = quiz_bank.BY_ID[ids[pos]]
+    answered = q["id"] in st.session_state["quiz_given"]
+    st.html(f'<div id="{QUIZ_ANCHOR_ID}"></div>')
+    st.progress(pos / len(ids), text=f"{pos + 1} / {len(ids)} 問目　{quiz_bank.PATTERNS[q['pattern']]['name']}")
+
+    # 【要望】「次へ」ボタンは、どの問題でも問題文の右に出す（下までスクロールしなくていいように）
+    head, nxt = st.columns([5, 1], vertical_alignment="center")
+    with head:
+        st.caption(q["tag"])
+        if q.get("persona"):
+            with st.chat_message("user", avatar="🧑‍🎓"):
+                st.write(q["q"])
+        elif q["type"] == "swipe":
+            st.markdown("#### この見出しは、良い知らせ？悪い知らせ？")
+        else:
+            st.markdown(f"#### {q['q']}")
+    with nxt:
+        if answered:
+            last = pos == len(ids) - 1
+            st.button("結果を見る" if last else "次へ →", type="primary",
+                      key=f"quiz_next_{st.session_state['quiz_nonce']}_{pos}", on_click=next_quiz, width="stretch")
+    if answered:
+        # 解説も問題文のすぐ下に出す（スマホでは「次へ」が問題文の下に来るので、解説と同じ場所にそろえる）
+        render_quiz_feedback(q)
+
+    if q["type"] == "case":
+        with st.container(border=True):
+            st.caption(f"🔎 {q['clue']['ttl']}")
+            st.table(pd.DataFrame(q["clue"]["rows"], columns=["項目", "値"]).set_index("項目"))
+        quiz_choice_buttons(q, q["options"], list(range(len(q["options"]))))
+    elif q["type"] == "vs":
+        st.table(pd.DataFrame(q["rows"], columns=["項目", "A社", "B社"]).set_index("項目"))
+        st.caption("※ 架空の会社の数字です。")
+        quiz_choice_buttons(q, q["options"], [0, 1], ncols=2)
+    elif q["type"] == "calc":
+        for col, (label, value) in zip(st.columns(len(q["givens"])), q["givens"]):
+            col.metric(label, value)
+        input_key = f"quiz_calc_{st.session_state['quiz_nonce']}_{q['id']}"
+        c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+        c1.number_input("答え（％、小数第1位まで）", key=input_key, value=None, step=0.1, format="%.1f", disabled=answered)
+        c2.button("答える", key=f"{input_key}_go", disabled=answered, on_click=answer_quiz_calc, args=(q["id"], input_key))
+        st.caption("※ 架空の数字です。")
+    elif q["type"] == "swipe":
+        st.markdown(f"<div style='text-align:center;font-size:2.4rem;font-weight:800;padding:0.4em 0'>【{q['q']}】</div>",
+                    unsafe_allow_html=True)
+        quiz_choice_buttons(q, q["options"], [quiz_bank.GOOD, quiz_bank.BAD], ncols=2)
+    elif q["type"] == "ox":
+        quiz_choice_buttons(q, ["○ 正しい", "✕ まちがい"], [True, False], ncols=2)
+    elif q["type"] == "map":
+        st.caption("※ 欄の並びはイメージです。本物の紙面の配置とは違います。")
+        quiz_choice_buttons(q, [f"【{o}】" for o in q["options"]], list(range(len(q["options"]))),
+                            ncols=1 if is_mobile_device() else 4)
+    else:
+        quiz_choice_buttons(q, q["options"], list(range(len(q["options"]))))
+
+
+def render_quiz_result():
+    ids = st.session_state["quiz_set"]
+    given = st.session_state["quiz_given"]
+    questions = [quiz_bank.BY_ID[i] for i in ids]
+    n_correct = sum(quiz_bank.check_answer(q, given.get(q["id"])) for q in questions)
+    st.subheader(f"結果：{n_correct} / {len(ids)} 問正解")
+    if all(q.get("memo") for q in questions):
+        with st.container(border=True):
+            st.markdown("**🔎 調査メモ（架空の会社）**\n\n" + "\n".join(f"- {q['memo']}" for q in questions))
+    missed = [q for q in questions if not quiz_bank.check_answer(q, given.get(q["id"]))]
+    if missed:
+        st.write("まちがえた問題（次の「おまかせ」でも優先して出ます）")
+        for q in missed:
+            st.markdown(f"- **{q['tag']}**：正解は「{quiz_bank.correct_text(q)}」　📍 {q['where']}")
+    else:
+        st.success("全問正解！")
+    c1, c2 = st.columns(2)
+    c1.button("もう一度（別の問題）", type="primary", on_click=start_quiz, args=(st.session_state["quiz_mode"],),
+              width="stretch")
+    c2.button("クイズのトップへ", on_click=end_quiz, width="stretch")
+
+
+def render_quiz_home(history: list):
+    summary = quiz_bank.summarize(history)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("解いた問題", f"{summary['answered']} / {summary['total']}")
+    c2.metric("正解済み", summary["correct"])
+    c3.metric("前回まちがえた", summary["wrong"])
+
+    st.button(f"▶ おまかせ{QUIZ_SET_SIZE}問（いろいろな種類からランダム）", type="primary", width="stretch",
+              on_click=start_quiz, args=(quiz_bank.MIXED,))
+    if summary["wrong"]:
+        st.button(f"📕 前回まちがえた問題に再挑戦（{summary['wrong']}問）", width="stretch",
+                  on_click=start_quiz, args=(quiz_bank.WRONG,))
+    st.caption("まだ解いていない問題 → 前回まちがえた問題 → 正解済みの問題、の順に出します。")
+
+    st.subheader("種類を選んで解く")
+    progress = quiz_bank.pattern_progress(history)
+    items = list(quiz_bank.PATTERNS.items())
+    cells = []
+    for row in range(0, len(items), 2):  # 1行ずつ作る（スマホで縦に積まれても A, B, C… の順になるように）
+        cells.extend(st.columns(2))
+    for cell, (key, meta) in zip(cells, items):
+        done, total = progress[key]
+        with cell.container(border=True):
+            st.markdown(f"**{key}. {meta['name']}**　正解済み {done} / {total}")
+            st.caption(meta["desc"])
+            st.button("解く", key=f"quiz_start_{key}", on_click=start_quiz, args=(key,))
+
+    wrong_ids = quiz_bank.wrong_question_ids(history)
+    with st.expander(f"📕 前回まちがえた問題を見る（{len(wrong_ids)}問）"):
+        if not wrong_ids:
+            st.caption("まだありません。")
+        for qid in wrong_ids:
+            q = quiz_bank.BY_ID[qid]
+            st.markdown(f"**{q['tag']}**（{quiz_bank.PATTERNS[q['pattern']]['name']}）：{q['q']}\n\n"
+                        f"正解：**{quiz_bank.correct_text(q)}**　📍 {q['where']}\n\n{q['explain']}")
+            st.divider()
+
+
+def page_quiz():
+    st.title("🎯 四季報と企業データのクイズ")
+    history = load_quiz_history()
+    note = st.session_state.get("quiz_storage_note")
+    if note == "viewer":
+        st.info("👀 閲覧専用アカウントのため、解いた記録は保存されません（この画面を開いている間だけ残ります）。")
+    elif note == "unavailable":
+        st.warning("解いた記録を保存できなかったため、この画面を開いている間だけ記録しています。")
+
+    if st.session_state.get("quiz_set"):
+        if st.session_state["quiz_pos"] >= len(st.session_state["quiz_set"]):
+            render_quiz_result()
+        else:
+            render_quiz_question()
+            st.button("やめる（ここまでの記録は残ります）", on_click=end_quiz)
+            if st.session_state.pop("quiz_scroll", False):
+                scroll_to_element(QUIZ_ANCHOR_ID)
+    else:
+        render_quiz_home(history)
+
+    st.write("---")
+    if st.button("← 戻る", key="quiz_back"):
+        end_quiz()
+        back = st.session_state.get("quiz_return", "title")
+        goto(back if back != "quiz" else "title")
+
 PAGE_FUNCTIONS = {
     "title": page_title,
     "disclaimer": page_disclaimer,
@@ -2278,6 +2554,7 @@ PAGE_FUNCTIONS = {
     "reporter_comment": page_reporter_comment,
     "result": page_result,
     "help": page_help,
+    "quiz": page_quiz,
     "admin": page_admin,
 }
 

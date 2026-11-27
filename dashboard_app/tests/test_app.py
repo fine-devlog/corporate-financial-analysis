@@ -10,6 +10,7 @@ APP = str(Path(__file__).resolve().parent.parent / "analysis02.py")
 USER = types.SimpleNamespace(email="test@example.com", app_metadata={})
 VIEWER = types.SimpleNamespace(email="viewer@example.com", app_metadata={"role": "viewer"})
 INSERTS = []  # FakeQuery.insert で書き込まれた (テーブル名, 中身)
+QUIZ_ROWS = []  # quiz_answers の中身（解いた記録）
 
 
 def edinet_row(i, name, code, income, margin, growth):
@@ -78,7 +79,8 @@ class FakeQuery:
     def execute(self):
         if self.fail:
             raise ConnectionError("DB down")
-        data = COMPANIES if self.table == "companies" else [TEXTS] if self.table == "company_texts" else []
+        data = (COMPANIES if self.table == "companies" else [TEXTS] if self.table == "company_texts"
+                else list(QUIZ_ROWS) if self.table == "quiz_answers" else [])
         data = [r for r in data if all(f(r) for f in self.filters)]
         return types.SimpleNamespace(data=data[self.rng[0]: self.rng[1] + 1])
 
@@ -107,6 +109,7 @@ def make_app(monkeypatch):
         import supabase
 
         INSERTS.clear()
+        QUIZ_ROWS.clear()
 
         monkeypatch.setattr(supabase, "create_client",
                             lambda *a, **k: types.SimpleNamespace(table=lambda n: FakeQuery(n, db_fail)))
@@ -528,15 +531,23 @@ def test_disclaimer_goes_to_view_mode(make_app):
     assert at.session_state["page"] == "view_mode"
 
 
-def test_view_mode_by_industry(make_app):
+def test_menu_company_goes_to_industry_select(make_app):
     at = make_app("view_mode")
-    at.button(key="view_mode_by_industry").click().run()
+    at.button(key="menu_company").click().run()
     assert at.session_state["page"] == "industry_select"
 
 
-def test_view_mode_all_industries(make_app):
+def test_menu_quiz_goes_to_quiz(make_app):
     at = make_app("view_mode")
-    at.button(key="view_mode_all").click().run()
+    at.button(key="menu_quiz").click().run()
+    assert not at.exception
+    assert at.session_state["page"] == "quiz"
+
+
+def test_industry_select_all_companies(make_app):
+    at = make_app("industry_select")
+    at.selectbox[0].set_value("🌐 全企業（業界を問わずまとめて見る）").run()
+    click(at, "次へ")
     assert not at.exception
     assert at.session_state["page"] == "company_data"
     assert at.session_state["selected_industry"] == "全業界"
@@ -563,3 +574,98 @@ def test_all_industries_falls_back_to_all_samples(make_app):
     at = make_app("company_data", db_fail=True, selected_industry="全業界")
     assert not at.exception
     assert len(at.dataframe[0].value) == 80  # 16業界×5社のサンプル
+
+
+# ---------------------------------------------------------------------------
+# 四季報クイズ
+# ---------------------------------------------------------------------------
+def _answer_current(at, correct=True):
+    """今の問題に答える（correct=False なら、わざとまちがえる）。"""
+    import quiz_bank
+    qid = at.session_state["quiz_set"][at.session_state["quiz_pos"]]
+    q = quiz_bank.BY_ID[qid]
+    nonce = at.session_state["quiz_nonce"]
+    if q["type"] == "calc":
+        key = f"quiz_calc_{nonce}_{qid}"
+        at.number_input(key=key).set_value(q["answer"] if correct else q["answer"] + 5).run()
+        return qid, at.button(key=f"{key}_go").click().run()
+    if q["type"] == "ox":
+        index = 0 if q["answer"] == correct else 1
+    else:
+        index = q["answer"] if correct else (q["answer"] + 1) % len(q["options"])
+    return qid, at.button(key=f"quiz_opt_{nonce}_{qid}_{index}").click().run()
+
+
+def test_quiz_answer_is_saved(make_app):
+    at = make_app("quiz")
+    at.button(key="quiz_start_A").click().run()
+    assert len(at.session_state["quiz_set"]) == 5
+    qid, at = _answer_current(at)
+    assert not at.exception
+    assert INSERTS == [("quiz_answers", {"question_id": qid, "correct": True})]
+    assert any(b.label == "次へ →" for b in at.button)
+    assert any("正解！" in s.value for s in at.success)
+
+
+def test_quiz_viewer_is_not_saved(make_app):
+    at = make_app("quiz", user=VIEWER)
+    assert any("閲覧専用アカウント" in i.value for i in at.info)
+    at.button(key="quiz_start_D").click().run()
+    _, at = _answer_current(at, correct=False)
+    assert INSERTS == []
+    assert len(at.session_state["quiz_history"]) == 1  # 画面を開いている間は残る
+
+
+def test_quiz_history_kept_when_switching_type(make_app):
+    at = make_app("quiz")
+    at.button(key="quiz_start_A").click().run()
+    _, at = _answer_current(at)
+    click(at, "やめる（ここまでの記録は残ります）")
+    at.button(key="quiz_start_G").click().run()
+    _, at = _answer_current(at)
+    assert len(at.session_state["quiz_history"]) == 2
+
+
+def test_quiz_loads_history_and_retries_wrong(make_app):
+    QUIZ_ROWS_DATA = [{"question_id": "A01", "correct": True, "answered_at": "2026-11-01T00:00:00+00:00"},
+                      {"question_id": "D03", "correct": False, "answered_at": "2026-11-02T00:00:00+00:00"}]
+
+    def make():
+        QUIZ_ROWS.extend(QUIZ_ROWS_DATA)
+
+    at = make_app("title")  # make_app が記録を空にするので、そのあとで入れる
+    make()
+    at.session_state["page"] = "quiz"
+    at.run()
+    assert not at.exception
+    assert [m.value for m in at.metric][:3] == ["2 / 62", "1", "1"]
+    click(at, "📕 前回まちがえた問題に再挑戦（1問）")
+    assert at.session_state["quiz_set"] == ["D03"]
+
+
+def test_quiz_calc_and_result(make_app):
+    at = make_app("quiz")
+    at.button(key="quiz_start_F").click().run()
+    for _ in range(5):
+        _, at = _answer_current(at)
+        next(b for b in at.button if b.label in ("次へ →", "結果を見る")).click().run()
+    assert not at.exception
+    assert any("結果：5 / 5 問正解" in h.value for h in at.subheader)
+
+
+def test_quiz_button_on_result_page(make_app):
+    at = make_app("result", **RESULT_STATE)
+    at.button(key="quiz_from_result").click().run()
+    assert not at.exception
+    assert at.session_state["page"] == "quiz"
+    click(at, "← 戻る")
+    assert at.session_state["page"] == "result"
+
+
+def test_quiz_button_after_comparison(make_app):
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    at.text_input(key="company_search_input").input("7203").run()
+    click(at, "検索")
+    click(at, "この企業を業界と比較する")
+    at.button(key="quiz_from_company_data").click().run()
+    assert at.session_state["page"] == "quiz"

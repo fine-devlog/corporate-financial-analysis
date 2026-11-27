@@ -120,6 +120,30 @@ create policy "results_update_admin" on results
   with check ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin');
 
 -- ===========================================================================
+-- quiz_answers: 四季報クイズを解いた記録（1回答＝1行）
+-- 自分の記録だけ読める・書ける。閲覧専用（role='viewer'）は書けない
+-- ===========================================================================
+create table if not exists quiz_answers (
+  id bigint generated always as identity primary key,
+  user_id uuid not null default auth.uid(),
+  question_id text not null,
+  correct boolean not null,
+  answered_at timestamptz not null default now()
+);
+create index if not exists quiz_answers_user_idx on quiz_answers (user_id, answered_at);
+
+alter table quiz_answers enable row level security;
+
+drop policy if exists "quiz_answers_select_own" on quiz_answers;
+create policy "quiz_answers_select_own" on quiz_answers
+  for select to authenticated using (user_id = auth.uid());
+
+drop policy if exists "quiz_answers_insert_own" on quiz_answers;
+create policy "quiz_answers_insert_own" on quiz_answers
+  for insert to authenticated
+  with check (user_id = auth.uid() and coalesce(auth.jwt() -> 'app_metadata' ->> 'role', '') <> 'viewer');
+
+-- ===========================================================================
 -- API（Data API）からの利用権限
 -- 新しい Supabase プロジェクトは、SQL で作ったテーブルに自動で権限を付けないため明示する。
 -- 実際に「どの行を読める/書けるか」は上の RLS ポリシーで制限される。anon（未ログイン）には何も付けない。
@@ -130,6 +154,8 @@ grant select, insert, update, delete on companies, company_texts, results to ser
 grant select, insert on companies to authenticated;
 grant select on company_texts to authenticated;
 grant select, insert, update on results to authenticated;
+grant select, insert on quiz_answers to authenticated;
+grant select, insert, update, delete on quiz_answers to service_role;
 
 -- id 列（identity）の採番に必要
 grant usage, select on all sequences in schema public to authenticated, service_role;
