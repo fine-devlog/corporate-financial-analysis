@@ -727,3 +727,32 @@ def test_no_label_style_without_selection(make_app):
     at = make_app("company_data", selected_industry="9.輸送用機器")
     axis = _vega_specs(at)[0]["layer"][0]["encoding"]["x"]["axis"]
     assert "labelColor" not in axis
+
+
+def _mobile(monkeypatch):
+    import shikiho_guide
+    monkeypatch.setattr(shikiho_guide, "is_mobile_user_agent", lambda ua: True)
+
+
+def test_mobile_industry_select_is_one_tap(make_app, monkeypatch):
+    """スマホ：業界はボタンで並び、1回タップするだけで企業データの画面に進む（選択欄・次へボタンは出さない）。"""
+    _mobile(monkeypatch)
+    at = make_app("industry_select")
+    assert not at.exception
+    assert not [sb for sb in at.selectbox if sb.label == "業界"]
+    pills = at.pills(key="industry_pills")
+    assert pills.options[0].endswith("全企業") and "通信" in pills.options  # 番号を省いた短い名前
+    pills.set_value("3.通信").run()
+    assert at.session_state["page"] == "company_data"
+    assert at.session_state["selected_industry"] == "3.通信"
+    assert any("【3.通信業界】" in t.value for t in at.title)
+
+
+def test_mobile_switch_industry_on_company_page(make_app, monkeypatch):
+    _mobile(monkeypatch)
+    at = make_app("company_data", selected_industry="9.輸送用機器")
+    assert any("業界を切り替える（今：9.輸送用機器業界）" in e.label for e in at.expander)
+    at.pills(key="industry_switch_pills").set_value("🌐 全企業（業界を問わずまとめて見る）").run()
+    assert not at.exception
+    assert at.session_state["selected_industry"] == "全業界"
+    assert at.session_state["page"] == "company_data"

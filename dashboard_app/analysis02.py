@@ -1252,11 +1252,47 @@ def page_view_mode():
 ALL_INDUSTRIES_OPTION = "🌐 全企業（業界を問わずまとめて見る）"
 
 
+def industry_pill_label(option: str) -> str:
+    """スマホのボタン用の短い業界名（先頭の番号を省く）。"""
+    return "🌐 全企業" if option == ALL_INDUSTRIES_OPTION else re.sub(r"^\d+\.", "", option)
+
+
+def choose_industry_from_pills(key: str, go_to_company_page: bool):
+    """スマホの業界ボタンが押されたとき。業界を切り替え、必要なら企業データの画面へ進む。"""
+    choice = st.session_state.get(key)
+    if choice is None:  # いま選ばれているボタンをもう一度押すと選択が外れるだけなので、何もしない
+        return
+    industry = ALL_INDUSTRIES if choice == ALL_INDUSTRIES_OPTION else choice
+    if industry != st.session_state.get("selected_industry"):
+        reset_analysis_state()
+        st.session_state["selected_industry"] = industry
+    if go_to_company_page:
+        # コールバックの中では st.rerun() が使えないので、ページの切り替えだけをしておく
+        st.session_state["prev_page"] = st.session_state.get("page", "industry_select")
+        st.session_state["page"] = "company_data"
+
+
+def render_industry_pills(key: str, industry, go_to_company_page: bool):
+    """【スマホ用】業界をボタンで並べ、1回タップするだけで選べるようにする。
+
+    選択欄（selectbox）はスマホだとキーボードが出て、17個の中からスクロールして探す必要があり、選びにくかった。
+    """
+    options = [ALL_INDUSTRIES_OPTION, *INDUSTRIES]
+    st.session_state[key] = (ALL_INDUSTRIES_OPTION if industry == ALL_INDUSTRIES
+                             else industry if industry in INDUSTRIES else None)
+    st.pills("業界", options, key=key, format_func=industry_pill_label, label_visibility="collapsed",
+             on_change=choose_industry_from_pills, args=(key, go_to_company_page))
+
+
 def page_industry_select():
     st.title("業界を選択してください")
     if st.button("← 前の画面に戻る"):
         goto("view_mode")
     current = st.session_state.get("selected_industry")
+    if is_mobile_device():
+        st.caption("業界をタップすると、その業界の企業データに進みます。「🌐 全企業」は業界を問わずまとめて見ます。")
+        render_industry_pills("industry_pills", current, go_to_company_page=True)
+        return
     # 【変更】16業界に加えて、全企業をまとめて見る選択肢を先頭に置く
     options = [ALL_INDUSTRIES_OPTION, *INDUSTRIES]
     current_option = ALL_INDUSTRIES_OPTION if current == ALL_INDUSTRIES else current
@@ -1711,6 +1747,11 @@ def switch_industry_from_page():
 
 
 def render_industry_switch(industry: str):
+    if is_mobile_device():
+        # スマホは、閉じた枠の中に業界のボタンを並べる（開いて1回タップするだけで切り替わる）
+        with st.expander(f"🔄 業界を切り替える（今：{industry_label(industry)}）"):
+            render_industry_pills("industry_switch_pills", industry, go_to_company_page=False)
+        return
     options = [ALL_INDUSTRIES_OPTION, *INDUSTRIES]
     # 業界選択の画面で選び直したときにも、表示がずれないように毎回いまの業界に合わせる
     st.session_state["industry_switch"] = ALL_INDUSTRIES_OPTION if industry == ALL_INDUSTRIES else industry
